@@ -1,0 +1,24 @@
+[project]
+name = "openeo-flood"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiohttp>=3.13.5",
+    "dask>=2026.3.0",
+    "fsspec>=2026.4.0",
+    "geotessera>=0.8.0",
+    "numpy>=2.4.6",
+    "openeo>=0.50.0",
+    "pyproj>=3.7.2",
+    "pystac-client>=0.9.0",
+    "rasterio>=1.5.0",
+    "rioxarray>=0.21.0",
+    "stackstac>=0.5.1",
+    "vecraspy",
+    "xarray>=2025.1.1",
+]
+
+[tool.uv.sources]
+vecraspy = { git = "https://github.com/kwundram2602/vecraspy.git" }
