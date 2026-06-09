@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="X-UA-Compatible" content="ie=edge" />
+<title>Markmap</title>
+<style>
+* {
+  margin: 0;
+  padding: 0;
+}
+html {
+  font-family: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji',
+    'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+}
+#mindmap {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
+.markmap-dark {
+  background: #27272a;
+  color: white;
+}
+</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.12/dist/style.css">
+</head>
+<body>
+<svg id="mindmap"></svg>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script><script src="https://cdn.jsdelivr.net/npm/markmap-view@0.18.12/dist/browser/index.js"></script><script src="https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.12/dist/index.js"></script><script>((r) => {
+          setTimeout(r);
+        })(() => {
+  const { markmap, mm } = window;
+  const toolbar = new markmap.Toolbar();
+  toolbar.attach(mm);
+  const el = toolbar.render();
+  el.setAttribute("style", "position:absolute;bottom:20px;right:20px");
+  document.body.append(el);
+})</script><script>((getMarkmap, getOptions, root2, jsonOptions) => {
+              const markmap = getMarkmap();
+              window.mm = markmap.Markmap.create(
+                "svg#mindmap",
+                (getOptions || markmap.deriveOptions)(jsonOptions),
+                root2
+              );
+              if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+                document.documentElement.classList.add("markmap-dark");
+              }
+            })(() => window.markmap,null,{"content":"Flood Risk","children":[{"content":"Hazard","children":[{"content":"Inputs: GFM + DTM ( from EODC STAC with xarray)","children":[],"payload":{"tag":"h3","lines":"3,4"}},{"content":"Create Water depth estimate with FLEXTH","children":[],"payload":{"tag":"h3","lines":"4,5"}}],"payload":{"tag":"h2","lines":"2,3"}},{"content":"Exposure","children":[],"payload":{"tag":"h2","lines":"7,8"}},{"content":"Layers :","children":[{"content":"World Settlement Footprint Built-up [0..1]","children":[],"payload":{"tag":"h3","lines":"9,10"}},{"content":"Roads and Railways","children":[],"payload":{"tag":"h3","lines":"10,11"}}],"payload":{"tag":"h2","lines":"8,9"}},{"content":"Vulnerability","children":[],"payload":{"tag":"h2","lines":"12,13"}},{"content":"Other Ideas : Create Flood Risk Map with INCA hourly precipitation and a DTM","children":[],"payload":{"tag":"h2","lines":"14,15"}}],"payload":{"tag":"h1","lines":"0,1"}},null)</script>
+</body>
+</html>
