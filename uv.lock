@@ -591,24 +591,11 @@ wheels = [
 [[package]]
 name = "flexth"
 version = "0.1.0"
-source = { editable = "D:/py_projects/FLEXTH" }
+source = { git = "https://github.com/kwundram2602/FLEXTH#3f47fbfd2ae8ce874ba74c38877223c378e0cee0" }
 dependencies = [
     { name = "astropy" },
     { name = "click" },
     { name = "gdal" },
-    { name = "numpy" },
-    { name = "opencv-python" },
-    { name = "pyyaml" },
-    { name = "rasterio" },
-    { name = "scikit-image" },
-    { name = "scipy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "astropy" },
-    { name = "click" },
-    { name = "gdal", url = "https://github.com/cgohlke/geospatial-wheels/releases/download/v2026.2.26/gdal-3.12.2-cp313-cp313-win_amd64.whl" },
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "pyyaml" },
@@ -1623,7 +1610,7 @@ dependencies = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.5" },
     { name = "dask", specifier = ">=2026.3.0" },
-    { name = "flexth", editable = "D:/py_projects/FLEXTH" },
+    { name = "flexth", git = "https://github.com/kwundram2602/FLEXTH" },
     { name = "fsspec", specifier = ">=2026.4.0" },
     { name = "geemap", specifier = ">=0.38.2" },
     { name = "numpy", specifier = ">=2.4.6" },
