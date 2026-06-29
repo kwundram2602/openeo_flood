@@ -14,3 +14,6 @@ npx markmap-cli .\README.md
 ## Vulnerability
 
 ## Other Ideas : Create Flood Risk Map with INCA hourly precipitation and a DTM
+- use grass gis (eo4cam) flash flood risk 
+- use fabdem
+- fallbacks for dem

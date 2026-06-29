@@ -1,0 +1,71 @@
+# flexth configuration file.
+#
+# Each top-level section corresponds to one `flexth` subcommand:
+#   flexth merge config.yaml
+#   flexth prepare-dtm config.yaml
+#   flexth resample config.yaml
+#   flexth run config.yaml
+#   flexth pipeline config.yaml   # runs merge -> resample -> prepare_dtm -> run,
+#                                  # skipping any section with enabled: false
+# eg uv run flexth pipeline D:\EAGLE\SoSe2026\openeo_flood\flexth_code\config.example.yaml
+#
+# Paths are set once in `io` below. Each step derives its paths from it:
+#   resample:         gfm  -> work_dir/flood.tif   (the metric master grid)
+#   prepare_dtm:      dtm  -> work_dir/dtm.tif, flood_reference = work_dir/flood.tif
+#   flood_processing: input_dir = work_dir, output_dir = output_dir
+# work_dir / output_dir are created automatically if missing.
+
+io:
+  dtm:        D:\EAGLE\SoSe2026\openeo_flood\flood_data\fabdem.tif         # DEM source
+  gfm:        D:\EAGLE\SoSe2026\openeo_flood\flood_data\gfm_flood_max.tif  # GFM flood mask source
+  work_dir:   D:\EAGLE\SoSe2026\openeo_flood\preprocessed                  # derived flood.tif + dtm.tif
+  output_dir: D:\EAGLE\SoSe2026\openeo_flood\wl_wd_out                     # final WL/WD output
+
+# can be ignored for a single image
+merge:
+  enabled: false              # set true if you have multiple raster tiles to mosaic
+  input_dir: /path/to/tiles
+  output_dir: /path/to/output
+  output_file_name: merged.tif
+  selection: all               # all | pattern
+  pattern: ""                  # used if selection: pattern, e.g. "OBSERVED_WATER"
+  resampling: nearest          # nearest | mode
+  method: max
+  nodata: 255
+
+# Runs first: reprojects gfm_flood_max.tif onto the metric grid -> preprocessed/flood.tif
+resample:
+  enabled: true                # produces the flood.tif master grid
+  reference_raster: null       # if set, matches CRS/resolution/bounds of this raster
+  crs: EPSG:32633              # UTM 33N (AOI 14.5-16.1E)
+  resolution: [30, 30]          # metres
+  resample_alg: near           # binary 0/1 flood mask -> near (not bilinear/mode)
+  compression: LZW
+
+# Runs second: warps fabdem.tif onto the flood.tif grid -> preprocessed/dtm.tif
+prepare_dtm:
+  enabled: true               # set true to resample/reproject a DTM (or mask) to the flood map grid
+  method: rasterio_gdal        # rasterio_gdal | gdal_only
+  continuous_input: true       # true = continuous data (DTM, bilinear); false = categorical (mask, mode)
+  compression: ZSTD
+
+flood_processing:
+  enabled: true
+  output_map: WL_WD              # WD | WL | WL_WD
+  wl_estimation_method: method_A # method_A | method_B
+  params:
+    threshold_slope: 0.05
+    size_gaps_close: 0.05
+    border_percentile: 0.50
+    max_number_neighbors: 100
+    min_flood_size: 100
+    inner_quantile: 0.98
+    inverse_dist_exp: 2
+    max_propagation_distance: 10
+    distance_range: 100
+    wd_star: 10
+    connectivity: 8
+    kernel_smoothing_size: 5
+    number_smoothings: 20
+    kern_closing_size: 3
+    closing_iterations: 2

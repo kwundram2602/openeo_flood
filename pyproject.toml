@@ -17,8 +17,13 @@ dependencies = [
     "rioxarray>=0.21.0",
     "stackstac>=0.5.1",
     "vecraspy",
+    "flexth",
     "xarray>=2025.1.1",
+    "geemap>=0.38.2",
 ]
 
 [tool.uv.sources]
 vecraspy = { git = "https://github.com/kwundram2602/vecraspy.git" }
+flexth = { path = "d:/py_projects/FLEXTH", editable = true }
+# Change GDAL source if neccessary, e.g. for Windows users, use the following wheel:
+gdal = { url = "https://github.com/cgohlke/geospatial-wheels/releases/download/v2026.2.26/gdal-3.12.2-cp313-cp313-win_amd64.whl" }

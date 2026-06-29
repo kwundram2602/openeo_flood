@@ -10,3 +10,7 @@ wheels/
 .venv
 t_kjell
 **.tif
+flood_data/
+.claude
+preprocess
+wl_wd_out
