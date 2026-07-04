@@ -1,26 +1,45 @@
 [project]
 name = "openeo-flood"
 version = "0.1.0"
-description = "Add your description here"
+description = "Unified flood-monitoring pipeline: FABDEM DEM + GFM flood extent + FLEXTH water depth"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "aiohttp>=3.13.5",
+    "click>=8.1",
     "dask>=2026.3.0",
+    "flexth",
+    "folium>=0.19",
     "fsspec>=2026.4.0",
+    "geedim>=1.9",
+    "geemap>=0.38.2",
+    "geopandas>=1.0",
+    "matplotlib>=3.9",
     "numpy>=2.4.6",
     "odc-stac>=0.5.2",
-    "openeo>=0.50.0",
     "pyproj>=3.7.2",
     "pystac-client>=0.9.0",
+    "pyyaml>=6.0",
     "rasterio>=1.5.0",
     "rioxarray>=0.21.0",
-    "stackstac>=0.5.1",
+    "streamlit>=1.40",
+    "streamlit-folium>=0.23",
     "vecraspy",
-    "flexth",
     "xarray>=2025.1.1",
-    "geemap>=0.38.2",
 ]
+
+[project.scripts]
+flood-pipeline = "flood_pipeline.cli:cli"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["uv_build>=0.7,<1"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "flood_pipeline"
 
 [tool.uv.sources]
 vecraspy = { git = "https://github.com/kwundram2602/vecraspy.git" }
