@@ -1,6 +1,18 @@
 version = 1
 revision = 3
 requires-python = ">=3.13"
+resolution-markers = [
+    "python_full_version < '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32'",
+    "sys_platform != 'win32'",
+    "(python_full_version >= '3.14' and sys_platform == 'win32') or (platform_machine != 'AMD64' and sys_platform == 'win32')",
+]
+
+[manifest]
+overrides = [
+    { name = "gdal", marker = "sys_platform != 'win32'", specifier = ">=3.13" },
+    { name = "gdal", marker = "(python_full_version != '3.13.*' and sys_platform == 'win32') or (platform_machine != 'AMD64' and sys_platform == 'win32')", specifier = "==3.12.2" },
+    { name = "gdal", marker = "python_full_version == '3.13.*' and platform_machine == 'AMD64' and sys_platform == 'win32'", url = "https://github.com/cgohlke/geospatial-wheels/releases/download/v2026.2.26/gdal-3.12.2-cp313-cp313-win_amd64.whl" },
+]
 
 [[package]]
 name = "affine"
@@ -620,7 +632,9 @@ source = { git = "https://github.com/kwundram2602/FLEXTH#3f47fbfd2ae8ce874ba74c3
 dependencies = [
     { name = "astropy" },
     { name = "click" },
-    { name = "gdal" },
+    { name = "gdal", version = "3.12.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or (platform_machine != 'AMD64' and sys_platform == 'win32')" },
+    { name = "gdal", version = "3.12.2", source = { url = "https://github.com/cgohlke/geospatial-wheels/releases/download/v2026.2.26/gdal-3.12.2-cp313-cp313-win_amd64.whl" }, marker = "python_full_version < '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32'" },
+    { name = "gdal", version = "3.13.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "pyyaml" },
@@ -772,7 +786,19 @@ wheels = [
 [[package]]
 name = "gdal"
 version = "3.12.2"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.14' and sys_platform == 'win32') or (platform_machine != 'AMD64' and sys_platform == 'win32')",
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b7/73/52753654d259cae674b7d4f2167d421382d9aa2ee510f047338381ae175b/gdal-3.12.2.tar.gz", hash = "sha256:a5afa8e55a19b296a004a15d38fe3ad60cc380f1f090e2aab5d35331008c970f", size = 899232, upload-time = "2026-02-09T17:53:29.78Z" }
+
+[[package]]
+name = "gdal"
+version = "3.12.2"
 source = { url = "https://github.com/cgohlke/geospatial-wheels/releases/download/v2026.2.26/gdal-3.12.2-cp313-cp313-win_amd64.whl" }
+resolution-markers = [
+    "python_full_version < '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32'",
+]
 wheels = [
     { url = "https://github.com/cgohlke/geospatial-wheels/releases/download/v2026.2.26/gdal-3.12.2-cp313-cp313-win_amd64.whl", hash = "sha256:4f74579b9e891a8185c22d043769d19fcb8309df66401ba91bc98375750870fd" },
 ]
@@ -780,6 +806,15 @@ wheels = [
 [package.metadata]
 requires-dist = [{ name = "numpy", marker = "extra == 'numpy'", specifier = ">1.0.0" }]
 provides-extras = ["numpy"]
+
+[[package]]
+name = "gdal"
+version = "3.13.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "sys_platform != 'win32'",
+]
+sdist = { url = "https://files.pythonhosted.org/packages/92/55/0ae08a59293443bbbb8b692d1f4b6d9ca54562c359a48d0426684ac9ea06/gdal-3.13.1.tar.gz", hash = "sha256:94bb64d729ce73ceb75a314a15cba92696cdd854d99b6bf6b88a7b551227db74", size = 940649, upload-time = "2026-06-05T10:50:14.929Z" }
 
 [[package]]
 name = "geedim"
@@ -1699,6 +1734,9 @@ dependencies = [
     { name = "flexth" },
     { name = "folium" },
     { name = "fsspec" },
+    { name = "gdal", version = "3.12.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or (platform_machine != 'AMD64' and sys_platform == 'win32')" },
+    { name = "gdal", version = "3.12.2", source = { url = "https://github.com/cgohlke/geospatial-wheels/releases/download/v2026.2.26/gdal-3.12.2-cp313-cp313-win_amd64.whl" }, marker = "python_full_version < '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32'" },
+    { name = "gdal", version = "3.13.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
     { name = "geedim" },
     { name = "geemap" },
     { name = "geopandas" },
@@ -1729,6 +1767,9 @@ requires-dist = [
     { name = "flexth", git = "https://github.com/kwundram2602/FLEXTH" },
     { name = "folium", specifier = ">=0.19" },
     { name = "fsspec", specifier = ">=2026.4.0" },
+    { name = "gdal", marker = "sys_platform != 'win32'", specifier = ">=3.13" },
+    { name = "gdal", marker = "(python_full_version != '3.13.*' and sys_platform == 'win32') or (platform_machine != 'AMD64' and sys_platform == 'win32')", specifier = "==3.12.2" },
+    { name = "gdal", marker = "python_full_version == '3.13.*' and platform_machine == 'AMD64' and sys_platform == 'win32'", url = "https://github.com/cgohlke/geospatial-wheels/releases/download/v2026.2.26/gdal-3.12.2-cp313-cp313-win_amd64.whl" },
     { name = "geedim", specifier = ">=1.9" },
     { name = "geemap", specifier = ">=0.38.2" },
     { name = "geopandas", specifier = ">=1.0" },
@@ -1825,7 +1866,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess" },
+    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
