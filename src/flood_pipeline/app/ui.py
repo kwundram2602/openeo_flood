@@ -1,0 +1,223 @@
+"""Shared dashboard helpers: config session state and raster overlays.
+
+The dashboard edits the raw config dict (kept in ``st.session_state``) so the
+YAML round-trips without schema friction; typed access for paths/validation
+goes through :func:`pipeline_cfg`, which reads the file as saved on disk.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+import folium
+import geopandas as gpd
+import matplotlib
+import numpy as np
+import streamlit as st
+import yaml
+
+from flood_pipeline.cli import CONFIG_ENV_VAR
+from flood_pipeline.config import PipelineConfig, load_config
+
+DEFAULT_CONFIG_NAME = "config.yaml"
+PROJECTS_DIR_NAME = "projects"
+OVERLAY_OPACITY = 0.85
+
+
+def discover_project_configs() -> list[Path]:
+    """config.yaml files of projects under <cwd>/projects, sorted by name."""
+    return sorted((Path.cwd() / PROJECTS_DIR_NAME).glob(f"*/{DEFAULT_CONFIG_NAME}"))
+
+
+def default_config_path() -> Path | None:
+    """The config to open on startup: env var, ./config.yaml, first project."""
+    env_value = os.environ.get(CONFIG_ENV_VAR)
+    if env_value:
+        return Path(env_value)
+    local = Path.cwd() / DEFAULT_CONFIG_NAME
+    if local.is_file():
+        return local
+    discovered = discover_project_configs()
+    if discovered:
+        return discovered[0]
+    return None
+
+
+def create_project(name: str, parent: Path, template: dict | None) -> Path:
+    """Create <parent>/<name>/config.yaml (from a template dict) and return it.
+
+    The template is usually the currently loaded config, so a new project
+    inherits GEE project, dates and FLEXTH parameters; its AOI starts empty
+    (draw one on the AOI page).
+    """
+    import copy
+
+    project_dir = parent / name
+    config_path = project_dir / DEFAULT_CONFIG_NAME
+    if config_path.exists():
+        raise FileExistsError(f"project already exists: {config_path}")
+    project_dir.mkdir(parents=True, exist_ok=True)
+    cfg_dict = copy.deepcopy(template) if template else {}
+    cfg_dict.setdefault("project", {})["name"] = name
+    cfg_dict.setdefault("aoi", {})["path"] = "aoi_drawn.geojson"
+    config_path.write_text(
+        yaml.safe_dump(cfg_dict, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def load_cfg(path: Path) -> None:
+    """(Re)load the config file into session state."""
+    st.session_state["cfg_dict"] = (
+        yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    )
+    st.session_state["cfg_path"] = path.resolve()
+
+
+def get_cfg() -> tuple[dict, Path]:
+    """The raw config dict and its path; loads the default on first access.
+
+    Halts the page with a hint when no project is available yet.
+    """
+    if "cfg_path" not in st.session_state:
+        default = default_config_path()
+        if default is None or not default.is_file():
+            st.warning("No project loaded — open or create one on the **Home** page.")
+            st.stop()
+        load_cfg(default)
+    return st.session_state["cfg_dict"], st.session_state["cfg_path"]
+
+
+def save_cfg() -> None:
+    """Write the session config dict back to its YAML file."""
+    cfg_dict, cfg_path = get_cfg()
+    cfg_path.write_text(
+        yaml.safe_dump(cfg_dict, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
+def pipeline_cfg() -> PipelineConfig:
+    """Typed view of the config *as saved on disk* (for paths and validation)."""
+    _, cfg_path = get_cfg()
+    return load_config(cfg_path)
+
+
+def aoi_outline(aoi_path: Path) -> gpd.GeoDataFrame:
+    return gpd.read_file(aoi_path).to_crs(epsg=4326)
+
+
+def add_aoi_layer(fmap: folium.Map, aoi_path: Path) -> None:
+    outline = aoi_outline(aoi_path)
+    folium.GeoJson(
+        outline.__geo_interface__,
+        name="AOI",
+        style_function=lambda _feat: {
+            "color": "#d62728",
+            "weight": 2,
+            "fill": False,
+            "dashArray": "6 4",
+        },
+    ).add_to(fmap)
+
+
+@dataclass
+class RasterOverlay:
+    """A display-ready raster: RGBA image, folium bounds and value stats."""
+
+    rgba: np.ndarray
+    bounds: list[list[float]]  # [[south, west], [north, east]] in EPSG:4326
+    vmin: float
+    vmax: float
+    valid_min: float
+    valid_mean: float
+    valid_max: float
+    valid_fraction: float
+
+
+def raster_overlay(
+    path: Path,
+    *,
+    cmap: str = "Blues",
+    max_dim: int = 1500,
+    mask_values: tuple[float, ...] = (),
+    scale: float = 1.0,
+) -> RasterOverlay:
+    """Load a raster as a colormapped RGBA overlay in EPSG:4326.
+
+    The raster is decimated to at most ``max_dim`` pixels per axis before
+    reprojection, ``mask_values`` (e.g. nodata 0 and the 999 permanent-water
+    sentinel) become transparent, and values are multiplied by ``scale``
+    (0.01 converts FLEXTH's WD centimeters to meters).
+    """
+    return _build_overlay(str(path), path.stat().st_mtime, cmap, max_dim, mask_values, scale)
+
+
+@st.cache_data(show_spinner="rendering raster overlay ...")
+def _build_overlay(
+    path_str: str,
+    _mtime: float,  # cache key only: invalidates when the file changes
+    cmap: str,
+    max_dim: int,
+    mask_values: tuple[float, ...],
+    scale: float,
+) -> RasterOverlay:
+    import rioxarray
+
+    data = rioxarray.open_rasterio(path_str, masked=True).squeeze(drop=True)
+    step_y = max(1, data.sizes["y"] // max_dim)
+    step_x = max(1, data.sizes["x"] // max_dim)
+    if step_y > 1 or step_x > 1:
+        data = data.isel(y=slice(None, None, step_y), x=slice(None, None, step_x))
+    data = data.rio.reproject("EPSG:4326")
+
+    values = data.values.astype("float32")
+    nodata = data.rio.nodata
+    if nodata is not None and not np.isnan(nodata):
+        values = np.where(values == nodata, np.nan, values)
+    for mask_value in mask_values:
+        values = np.where(values == mask_value, np.nan, values)
+    values *= scale
+
+    finite_mask = np.isfinite(values)
+    finite = values[finite_mask]
+    if finite.size == 0:
+        raise ValueError(f"no valid pixels to display in {path_str}")
+    vmin = float(np.percentile(finite, 2))
+    vmax = float(np.percentile(finite, 98))
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+
+    normalized = np.clip((values - vmin) / (vmax - vmin), 0.0, 1.0)
+    rgba = matplotlib.colormaps[cmap](np.nan_to_num(normalized, nan=0.0))
+    rgba[..., 3] = np.where(finite_mask, OVERLAY_OPACITY, 0.0)
+
+    left, bottom, right, top = data.rio.bounds()
+    return RasterOverlay(
+        rgba=(rgba * 255).astype("uint8"),
+        bounds=[[float(bottom), float(left)], [float(top), float(right)]],
+        vmin=vmin,
+        vmax=vmax,
+        valid_min=float(finite.min()),
+        valid_mean=float(finite.mean()),
+        valid_max=float(finite.max()),
+        valid_fraction=float(finite.size / values.size),
+    )
+
+
+def colorbar_figure(vmin: float, vmax: float, cmap: str, label: str):
+    """A slim horizontal colorbar to serve as the map legend."""
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(5, 0.9))
+    ax = fig.add_axes((0.05, 0.55, 0.9, 0.3))  # leave room for the label below
+    mappable = matplotlib.cm.ScalarMappable(
+        norm=matplotlib.colors.Normalize(vmin=vmin, vmax=vmax),
+        cmap=cmap,
+    )
+    fig.colorbar(mappable, cax=ax, orientation="horizontal")
+    ax.set_xlabel(label)
+    return fig

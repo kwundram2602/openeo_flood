@@ -5,12 +5,18 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
 
 # Virtual environments
 .venv
 t_kjell
 **.tif
-flood_data/
 .claude
-preprocess
-wl_wd_out
+
+# Per-project data (DEM/GFM downloads, FLEXTH intermediates and outputs)
+# but keep each project's config and AOI vectors under version control.
+projects/**
+!projects/*/
+!projects/*/config.yaml
+!projects/*/*.geojson
+!projects/*/*.gpkg

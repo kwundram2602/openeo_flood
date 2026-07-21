@@ -1,29 +1,67 @@
 [project]
 name = "openeo-flood"
 version = "0.1.0"
-description = "Add your description here"
+description = "Unified flood-monitoring pipeline: FABDEM DEM + GFM flood extent + FLEXTH water depth"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "aiohttp>=3.13.5",
+    "click>=8.1",
     "dask>=2026.3.0",
+    "flexth",
+    "folium>=0.19",
     "fsspec>=2026.4.0",
+    # Windows: pinned to the prebuilt wheel in [tool.uv.sources].
+    # Elsewhere: built from the PyPI sdist, so it must match the system libgdal
+    # (check with `gdal-config --version`).
+    "gdal==3.12.2; sys_platform == 'win32'",
+    "gdal>=3.13; sys_platform != 'win32'",
+    "geedim>=1.9",
+    "geemap>=0.38.2",
+    "geopandas>=1.0",
+    "matplotlib>=3.9",
     "numpy>=2.4.6",
     "odc-stac>=0.5.2",
-    "openeo>=0.50.0",
     "pyproj>=3.7.2",
     "pystac-client>=0.9.0",
+    "pyyaml>=6.0",
     "rasterio>=1.5.0",
     "rioxarray>=0.21.0",
-    "stackstac>=0.5.1",
+    "streamlit>=1.40",
+    "streamlit-folium>=0.23",
     "vecraspy",
-    "flexth",
     "xarray>=2025.1.1",
-    "geemap>=0.38.2",
 ]
+
+[project.scripts]
+flood-pipeline = "flood_pipeline.cli:cli"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["uv_build>=0.7,<1"]
+build-backend = "uv_build"
+
+[tool.uv]
+# TEMPORARY: delete this block once the platform-split gdal fix in FLEXTH
+# (local commit f97dda7) is pushed and the git source below picks it up.
+# The published flexth pins gdal==3.12.2, which forces every platform onto the
+# Windows-only wheel and breaks sync on Linux/macOS.
+override-dependencies = [
+    "gdal==3.12.2; sys_platform == 'win32'",
+    "gdal>=3.13; sys_platform != 'win32'",
+]
+
+[tool.uv.build-backend]
+module-name = "flood_pipeline"
 
 [tool.uv.sources]
 vecraspy = { git = "https://github.com/kwundram2602/vecraspy.git" }
 flexth = { git = "https://github.com/kwundram2602/FLEXTH" }
-# Change GDAL source if neccessary, e.g. for Windows users, use the following wheel:
-gdal = { url = "https://github.com/cgohlke/geospatial-wheels/releases/download/v2026.2.26/gdal-3.12.2-cp313-cp313-win_amd64.whl" }
+# Windows has no system libgdal, so pull a prebuilt wheel from cgohlke.
+# Linux/macOS: no marker matches, so uv falls back to PyPI, which builds the
+# sdist against the system libgdal (needs libgdal-dev at a matching version).
+gdal = [
+    { url = "https://github.com/cgohlke/geospatial-wheels/releases/download/v2026.2.26/gdal-3.12.2-cp313-cp313-win_amd64.whl", marker = "sys_platform == 'win32' and platform_machine == 'AMD64' and python_version == '3.13'" },
+]

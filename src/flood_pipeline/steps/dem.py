@@ -1,0 +1,127 @@
+"""FABDEM DEM step: mosaic from Google Earth Engine, local download or Drive export.
+
+Port of the former ``xarray_pipelines/fabdem.py`` without import-time side
+effects: authentication, AOI path and GEE project all come from the config.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import ee
+import geemap
+import geopandas as gpd
+import rasterio
+import rasterio.warp
+
+from flood_pipeline import gee
+from flood_pipeline.config import PipelineConfig
+from flood_pipeline.steps import LogFn, StepOutcome
+
+FABDEM_COLLECTION = "projects/sat-io/open-datasets/FABDEM"
+
+
+def load_aoi(aoi_path: Path) -> gpd.GeoDataFrame:
+    """Read the AOI vector file and bring it to EPSG:4326."""
+    return gpd.read_file(aoi_path).to_crs(epsg=4326)
+
+
+def build_fabdem_image(aoi: gpd.GeoDataFrame) -> tuple[ee.Image, ee.Geometry]:
+    """FABDEM mosaic clipped to the AOI, plus the AOI as an EE geometry.
+
+    FABDEM is a static DEM (no time dimension); the tiles intersecting the
+    AOI are mosaicked into a single image.
+    """
+    aoi_ee = geemap.geopandas_to_ee(aoi)
+    mosaic = ee.ImageCollection(FABDEM_COLLECTION).filterBounds(aoi_ee).mosaic()
+    return mosaic.clip(aoi_ee), aoi_ee.geometry()
+
+
+def covers_aoi(dem_path: Path, aoi_bounds_4326: tuple[float, float, float, float]) -> bool:
+    """Whether an existing DEM raster's extent contains the AOI bounds.
+
+    Guards the skip-if-exists shortcut: a cached DEM downloaded for a
+    different (e.g. previously drawn) AOI must not be reused silently.
+    Tolerance is one pixel on each edge.
+    """
+    with rasterio.open(dem_path) as source:
+        left, bottom, right, top = rasterio.warp.transform_bounds(
+            "EPSG:4326", source.crs, *aoi_bounds_4326
+        )
+        tolerance_x = abs(source.transform.a)
+        tolerance_y = abs(source.transform.e)
+        return (
+            source.bounds.left <= left + tolerance_x
+            and source.bounds.bottom <= bottom + tolerance_y
+            and source.bounds.right >= right - tolerance_x
+            and source.bounds.top >= top - tolerance_y
+        )
+
+
+def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
+    """Fetch the FABDEM DEM for the AOI according to ``cfg.dem``."""
+    out_path = cfg.dem_path()
+    aoi = load_aoi(cfg.aoi_abs_path)
+    bounds = tuple(round(float(value), 5) for value in aoi.total_bounds)
+    log(f"AOI bounds (EPSG:4326): {bounds}")
+
+    if out_path.exists() and not cfg.dem.overwrite:
+        if covers_aoi(out_path, bounds):
+            log(f"DEM already present and covers the AOI, skipping download: {out_path}")
+            return StepOutcome(outputs=[out_path])
+        log(f"existing {out_path.name} does not cover the AOI — downloading a new DEM")
+
+    gee.init_gee(cfg.project.gee_project)
+    image, region = build_fabdem_image(aoi)
+
+    if cfg.dem.delivery == "drive":
+        return _export_to_drive(cfg, image, region, log)
+    return _download_local(cfg, image, region, out_path, log)
+
+
+def _download_local(
+    cfg: PipelineConfig,
+    image: ee.Image,
+    region: ee.Geometry,
+    out_path: Path,
+    log: LogFn,
+) -> StepOutcome:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    log(f"downloading FABDEM at {cfg.dem.scale} m resolution to {out_path} ...")
+    # geedim-backed: splits the request into tiles below the EE size limit
+    # and reassembles them into one GeoTIFF.
+    geemap.download_ee_image(
+        image,
+        str(out_path),
+        region=region,
+        scale=cfg.dem.scale,
+        crs=cfg.dem.crs,
+    )
+    log(f"DEM written: {out_path}")
+    return StepOutcome(outputs=[out_path])
+
+
+def _export_to_drive(
+    cfg: PipelineConfig,
+    image: ee.Image,
+    region: ee.Geometry,
+    log: LogFn,
+) -> StepOutcome:
+    task = ee.batch.Export.image.toDrive(
+        image=image,
+        description=f"{cfg.dem.drive_prefix}_export",
+        folder=cfg.dem.drive_folder,
+        fileNamePrefix=cfg.dem.drive_prefix,
+        scale=cfg.dem.scale,
+        region=region,
+        fileFormat="GeoTIFF",
+    )
+    task.start()
+    message = (
+        f"Drive export task started (id={task.id}). When it finishes, download "
+        f"'{cfg.dem.drive_prefix}*.tif' from the Drive folder "
+        f"'{cfg.dem.drive_folder}' to {cfg.dem_path()}, then re-run the "
+        "pipeline: the dem step will detect the file and continue with gfm/flexth."
+    )
+    log(message)
+    return StepOutcome(halt=True, message=message)
