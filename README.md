@@ -11,10 +11,10 @@ single `config.yaml` and a Streamlit dashboard.
 ```bash
 uv sync
 
-# one-time Google Earth Engine login (needed for the dem step only)
+# one-time Google Earth Engine login (needed for DEM and population)
 uv run flood-pipeline auth projects/austria_demo/config.yaml
 
-# full pipeline: dem -> gfm -> flexth
+# full pipeline: dem -> gfm -> flexth -> population
 uv run flood-pipeline run projects/austria_demo/config.yaml
 
 # subsets
@@ -34,6 +34,7 @@ uv run flood-pipeline dashboard
 | `dem`    | FABDEM mosaic via Google Earth Engine                 | `flood_data/fabdem.tif`                                    |
 | `gfm`    | GFM `ensemble_flood_extent` via EODC STAC (public)    | `flood_data/gfm_flood_max.tif` (+ optional `..._sum.tif`)  |
 | `flexth` | FLEXTH `pipeline` (resample -> prepare-dtm -> run)    | `preprocessed/{flood,dtm}.tif`, `wl_wd_out/WD_*/WL_*.tif`  |
+| `population` | WorldPop 2020 via Google Earth Engine          | `flood_data/worldpop_2020.tif`                              |
 
 Each run is a **project folder** holding its own `config.yaml` and all data;
 every path in the config resolves relative to that folder:
@@ -102,6 +103,16 @@ gfm:
   aggregation: max            # max | sum | both — the temporal max is always
                               # written (it feeds flexth); sum/both add the sum raster
   out_name: gfm_flood_max.tif
+
+population:
+  enabled: true
+  collection: WorldPop/GP/100m/pop_age_sex_cons_unadj
+  year: 2020                 # this age/sex collection currently only has 2020
+  band: population           # total residents per cell; do not sum all bands
+  scale: 100
+  crs: EPSG:4326
+  out_name: worldpop_2020.tif
+  overwrite: false
 
 flexth:                       # passed through into work_dir/flexth_config.yaml;
   enabled: true               # io + merge sections are generated automatically
