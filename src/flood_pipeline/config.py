@@ -90,6 +90,20 @@ class GfmConfig:
 
 
 @dataclass
+class PopulationConfig:
+    """WorldPop exposure-layer retrieval via Google Earth Engine."""
+
+    enabled: bool = True
+    collection: str = "WorldPop/GP/100m/pop_age_sex_cons_unadj"
+    year: int = 2020
+    band: str = "population"
+    scale: int = 100
+    crs: str = "EPSG:4326"
+    out_name: str = "worldpop_2020.tif"
+    overwrite: bool = False
+
+
+@dataclass
 class PipelineConfig:
     """The full unified config plus the location it was loaded from."""
 
@@ -97,6 +111,7 @@ class PipelineConfig:
     aoi_path: str
     dem: DemConfig
     gfm: GfmConfig
+    population: PopulationConfig
     flexth: dict
     source_path: Path
 
@@ -139,6 +154,10 @@ class PipelineConfig:
     def gfm_sum_path(self) -> Path:
         """The optional temporal-sum raster (aggregation "sum" or "both")."""
         return self.data_dir / self.gfm.sum_out_name()
+
+    def population_path(self) -> Path:
+        """The WorldPop raster used for exposure calculations."""
+        return self.data_dir / self.population.out_name
 
 
 def _as_iso_date(value: object) -> str:
@@ -189,6 +208,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         aoi_path=str(aoi_section.get("path", "aoi.gpkg")),
         dem=_section_to_dataclass(DemConfig, raw, "dem"),
         gfm=gfm,
+        population=_section_to_dataclass(PopulationConfig, raw, "population"),
         flexth=raw.get("flexth") or {},
         source_path=path.resolve(),
     )
@@ -201,6 +221,7 @@ def to_dict(cfg: PipelineConfig) -> dict:
         "aoi": {"path": cfg.aoi_path},
         "dem": dataclasses.asdict(cfg.dem),
         "gfm": dataclasses.asdict(cfg.gfm),
+        "population": dataclasses.asdict(cfg.population),
         "flexth": cfg.flexth,
     }
 
@@ -240,8 +261,16 @@ def validate(cfg: PipelineConfig) -> list[str]:
         errors.append(
             f"dem.delivery must be one of {DEM_DELIVERY_MODES}, got {cfg.dem.delivery!r}"
         )
-    if cfg.dem.enabled and not cfg.project.gee_project:
-        errors.append("project.gee_project must be set when the dem step is enabled")
+    if (cfg.dem.enabled or cfg.population.enabled) and not cfg.project.gee_project:
+        errors.append(
+            "project.gee_project must be set when the dem or population step is enabled"
+        )
+    if cfg.population.year != 2020:
+        errors.append(
+            "population.year must be 2020 for the configured WorldPop age/sex collection"
+        )
+    if cfg.population.scale <= 0:
+        errors.append("population.scale must be greater than zero")
     if cfg.gfm.aggregation not in GFM_AGGREGATIONS:
         errors.append(
             f"gfm.aggregation must be one of {GFM_AGGREGATIONS}, got {cfg.gfm.aggregation!r}"
