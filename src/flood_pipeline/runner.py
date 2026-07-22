@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from flood_pipeline.config import PipelineConfig, validate
 from flood_pipeline.steps import LogFn, StepOutcome
 
-STEP_ORDER = ("dem", "gfm", "flexth")
+STEP_ORDER = ("dem", "gfm", "flexth", "population")
 
 
 class UnknownStepError(ValueError):
@@ -44,9 +44,13 @@ def _step_runner(step: str):
         from flood_pipeline.steps import gfm
 
         return gfm.run
-    from flood_pipeline.steps import flexth_step
+    if step == "flexth":
+        from flood_pipeline.steps import flexth_step
 
-    return flexth_step.run
+        return flexth_step.run
+    from flood_pipeline.steps import population
+
+    return population.run
 
 
 def _step_enabled(cfg: PipelineConfig, step: str) -> bool:
@@ -54,7 +58,9 @@ def _step_enabled(cfg: PipelineConfig, step: str) -> bool:
         return cfg.dem.enabled
     if step == "gfm":
         return cfg.gfm.enabled
-    return bool(cfg.flexth.get("enabled", True))
+    if step == "flexth":
+        return bool(cfg.flexth.get("enabled", True))
+    return cfg.population.enabled
 
 
 def run_pipeline(
