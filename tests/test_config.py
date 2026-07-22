@@ -36,6 +36,8 @@ def test_load_fills_defaults(config_file: Path) -> None:
     assert cfg.project.data_dir == "flood_data"  # default
     assert cfg.dem.scale == 30  # default
     assert cfg.gfm.aggregation == "max"  # default
+    assert cfg.population.year == 2020
+    assert cfg.population.band == "population"
     assert cfg.flexth["resample"]["crs"] == "EPSG:32633"
 
 
@@ -47,6 +49,7 @@ def test_everything_resolves_inside_the_project_folder(config_file: Path) -> Non
     assert cfg.data_dir == project_dir / "flood_data"
     assert cfg.dem_path() == project_dir / "flood_data" / "fabdem.tif"
     assert cfg.gfm_mask_path().name == "gfm_flood_max.tif"
+    assert cfg.population_path().name == "worldpop_2020.tif"
     assert cfg.aoi_abs_path == project_dir / "aoi.geojson"
 
 
@@ -133,8 +136,15 @@ def test_validate_missing_gee_project(config_file: Path) -> None:
     cfg = load_config(config_file)
     cfg.project.gee_project = ""
     assert any("gee_project" in e for e in validate(cfg))
-    cfg.dem.enabled = False  # not needed when the dem step is off
+    cfg.dem.enabled = False
+    cfg.population.enabled = False  # not needed when both GEE steps are off
     assert not any("gee_project" in e for e in validate(cfg))
+
+
+def test_validate_worldpop_age_sex_year(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    cfg.population.year = 2024
+    assert any("population.year" in e for e in validate(cfg))
 
 
 def test_validate_bad_aggregation(config_file: Path) -> None:

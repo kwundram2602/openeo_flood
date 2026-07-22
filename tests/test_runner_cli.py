@@ -28,7 +28,9 @@ def config_file(tmp_path: Path) -> Path:
 
 
 def test_normalize_steps_orders_and_dedupes() -> None:
-    assert normalize_steps(["flexth", "dem", "dem", " gfm "]) == ["dem", "gfm", "flexth"]
+    assert normalize_steps(["population", "flexth", "dem", "dem", " gfm "]) == [
+        "dem", "gfm", "flexth", "population"
+    ]
     assert normalize_steps(["GFM"]) == ["gfm"]
     assert normalize_steps([]) == []
 
@@ -71,6 +73,7 @@ def test_run_pipeline_halts_after_drive_export(config_file: Path, monkeypatch) -
             "dem": StepOutcome(halt=True, message="download from Drive first"),
             "gfm": StepOutcome(),
             "flexth": StepOutcome(),
+            "population": StepOutcome(),
         },
     )
     lines: list[str] = []
