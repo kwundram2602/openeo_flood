@@ -27,6 +27,15 @@ gfm:
   max_items: 20
   aggregation: max
   out_name: gfm_flood_max.tif
+population:
+  enabled: true
+  collection: WorldPop/GP/100m/pop_age_sex_cons_unadj
+  year: 2020
+  band: population
+  scale: 100
+  crs: EPSG:4326
+  out_name: worldpop_2020.tif
+  overwrite: false
 flexth:
   enabled: true
   resample:
