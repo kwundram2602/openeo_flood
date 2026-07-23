@@ -1,9 +1,9 @@
 """GFM flood-extent step: ensemble flood extent from the EODC STAC catalog.
 
-Port of the former ``xarray_pipelines/get_gfm_image.py``: AOI, dates and
-resolution come from the config, and outputs land in the configured data dir.
-The temporal maximum is always written because it is FLEXTH's input mask; the
-temporal sum is optional (``gfm.aggregation: sum`` or ``both``).
+One raster is written per acquisition timestamp (cube time-slice); FLEXTH then
+consumes each per-scene mask. The whole-time maximum is always written too (as a
+reference/overlay) and the temporal sum is optional (``gfm.aggregation: sum`` or
+``both``).
 """
 
 from __future__ import annotations
@@ -11,13 +11,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import geopandas as gpd
-import odc.stac
+import odc.stac # used to create a (time, y, x) cube from the GFM STAC items
+import pandas as pd
 import pystac
-import pystac_client
-import rioxarray  # noqa: F401  registers the .rio accessor used in _write_geotiff
+import pystac_client # open stac catalog and search for items
+import rioxarray
 import xarray as xr
 
-from flood_pipeline.config import PipelineConfig
+from flood_pipeline.config import SCENE_STAMP_FORMAT, PipelineConfig
 from flood_pipeline.steps import LogFn, StepOutcome
 
 GFM_NODATA = 255
@@ -102,7 +103,13 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
     )
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
-    outputs = [_write_geotiff(flood.max(dim="time"), cfg.gfm_mask_path(), log)]
+    outputs: list[Path] = []
+    for time_value in flood["time"].values:
+        stamp = pd.Timestamp(time_value).strftime(SCENE_STAMP_FORMAT)
+        scene = flood.sel(time=time_value, drop=True)
+        outputs.append(_write_geotiff(scene, cfg.gfm_scene_path(stamp), log))
+
+    outputs.append(_write_geotiff(flood.max(dim="time"), cfg.gfm_mask_path(), log))
     if cfg.gfm.aggregation in ("sum", "both"):
         outputs.append(_write_geotiff(flood.sum(dim="time"), cfg.gfm_sum_path(), log))
     return StepOutcome(outputs=outputs)
