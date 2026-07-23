@@ -81,7 +81,7 @@ class GfmConfig:
         default_factory=lambda: ["2024-09-15", "2024-09-20"]
     )
     resolution: float = 0.0003  # degrees (EPSG:4326)
-    max_items: int = 20
+    max_items: int = 0  # optional safety cap on scenes loaded; 0 = fetch all
     aggregation: str = "max"  # "max" | "sum" | "both"; max is always written
 
 

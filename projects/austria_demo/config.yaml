@@ -24,7 +24,7 @@ gfm:
   - '2024-09-03'
   - '2024-09-30'
   resolution: 0.0003
-  max_items: 20
+  max_items: 0
   aggregation: max
 flexth:
   enabled: true

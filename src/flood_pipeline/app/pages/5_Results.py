@@ -64,8 +64,11 @@ try:
     overlay = ui.raster_overlay(
         selected, cmap="Blues", mask_values=mask_values, scale=scale
     )
-except ValueError as e:
-    st.error(str(e))
+except ValueError:
+    st.info(
+        f"Scene {_label(stamp)} has no {kind.lower()} to show — the GFM flood "
+        "extent was empty over the AOI for this acquisition."
+    )
     st.stop()
 
 col1, col2, col3, col4 = st.columns(4)
