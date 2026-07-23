@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import odc.stac
 import pystac
 import pystac_client
@@ -102,7 +103,18 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
     )
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
-    outputs = [_write_geotiff(flood.max(dim="time"), cfg.gfm_mask_path(), log)]
+    flood_max = flood.max(dim="time")
+    outputs = [_write_geotiff(flood_max, cfg.gfm_mask_path(), log)]
+    flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
+    log(f"detected flood pixels in temporal maximum: {flood_pixel_count}")
+    if flood_pixel_count == 0:
+        raise RuntimeError(
+            "GFM returned scenes, but ensemble_flood_extent is zero throughout "
+            "the AOI and date range. FLEXTH cannot estimate water depth without "
+            "flood pixels. Check the GFM raster/scene browser, use a known flooded "
+            "AOI or another date range; increasing max_items alone does not create "
+            "detections."
+        )
     if cfg.gfm.aggregation in ("sum", "both"):
         outputs.append(_write_geotiff(flood.sum(dim="time"), cfg.gfm_sum_path(), log))
     return StepOutcome(outputs=outputs)

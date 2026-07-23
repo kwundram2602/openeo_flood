@@ -50,6 +50,10 @@ try:
     overlay = ui.raster_overlay(selected, cmap="Blues", mask_values=mask_values, scale=scale)
 except ValueError as e:
     st.error(str(e))
+    st.info(
+        "This output contains no displayable water values. Check that "
+        "`gfm_flood_max.tif` contains nonzero flood pixels before running FLEXTH."
+    )
     st.stop()
 
 col1, col2, col3, col4 = st.columns(4)
@@ -113,11 +117,11 @@ if cfg.aoi_abs_path.exists():
 folium.LayerControl().add_to(fmap)
 fmap.fit_bounds(overlay.bounds)
 
-st_folium(fmap, key="results_map", height=600, use_container_width=True, returned_objects=[])
+st_folium(fmap, key="results_map", height=600, width="stretch", returned_objects=[])
 
 st.pyplot(
     ui.colorbar_figure(overlay.vmin, overlay.vmax, "Blues", label),
-    use_container_width=False,
+    width="content",
 )
 st.caption(
     "Color range is the 2nd-98th percentile of valid pixels; the map is a "
