@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from flood_pipeline import config as config_module
 from flood_pipeline.config import ConfigError, load_config, save_config, to_dict, validate
 
 MINIMAL_CONFIG = {
@@ -57,11 +56,31 @@ def test_absolute_paths_kept(config_file: Path, tmp_path: Path) -> None:
     assert cfg.data_dir == absolute
 
 
-def test_sum_out_name_derived() -> None:
-    gfm = config_module.GfmConfig(out_name="gfm_flood_max.tif")
-    assert gfm.sum_out_name() == "gfm_flood_sum.tif"
-    gfm = config_module.GfmConfig(out_name="flood.tif")
-    assert gfm.sum_out_name() == "flood_sum.tif"
+def test_gfm_scene_path_and_paths(config_file: Path, tmp_path: Path) -> None:
+    cfg = load_config(config_file)
+    assert cfg.gfm_mask_path().name == "gfm_flood_max.tif"
+    assert cfg.gfm_sum_path().name == "gfm_flood_sum.tif"
+    assert cfg.gfm_scene_path("2024-09-16_051230").name == "gfm_flood_2024-09-16_051230.tif"
+
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.data_dir / "gfm_flood_2024-09-18_052000.tif").write_bytes(b"")
+    (cfg.data_dir / "gfm_flood_2024-09-16_051230.tif").write_bytes(b"")
+    cfg.gfm_mask_path().write_bytes(b"")   # must be excluded
+    cfg.gfm_sum_path().write_bytes(b"")    # must be excluded
+    (cfg.data_dir / "unrelated.tif").write_bytes(b"")
+
+    names = [p.name for p in cfg.gfm_scene_paths()]
+    assert names == [
+        "gfm_flood_2024-09-16_051230.tif",
+        "gfm_flood_2024-09-18_052000.tif",
+    ]
+
+
+def test_scene_dirs(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    stamp = "2024-09-16_051230"
+    assert cfg.scene_work_dir(stamp) == cfg.work_dir / stamp
+    assert cfg.scene_output_dir(stamp) == cfg.output_dir / stamp
 
 
 def test_round_trip_preserves_content(config_file: Path, tmp_path: Path) -> None:

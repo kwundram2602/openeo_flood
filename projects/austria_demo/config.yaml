@@ -22,11 +22,10 @@ gfm:
   band: ensemble_flood_extent
   temporal_extent:
   - '2024-09-03'
-  - '2024-09-23'
+  - '2024-09-30'
   resolution: 0.0003
   max_items: 20
   aggregation: max
-  out_name: gfm_flood_max.tif
 flexth:
   enabled: true
   resample:
