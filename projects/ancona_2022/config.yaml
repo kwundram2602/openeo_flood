@@ -12,7 +12,7 @@ dem:
   scale: 30
   crs: EPSG:4326
   out_name: fabdem_dash.tif
-  overwrite: true
+  overwrite: false
   drive_folder: fabdem_exports
   drive_prefix: fabdem
 gfm:
@@ -21,8 +21,8 @@ gfm:
   collection: GFM
   band: ensemble_flood_extent
   temporal_extent:
-  - '2022-09-15'
-  - '2022-09-19'
+  - '2024-03-17'
+  - '2024-04-16'
   resolution: 0.0003
   max_items: 100
   aggregation: max
@@ -35,7 +35,7 @@ population:
   scale: 100
   crs: EPSG:4326
   out_name: worldpop_2020.tif
-  overwrite: true
+  overwrite: false
 flexth:
   enabled: true
   resample:
