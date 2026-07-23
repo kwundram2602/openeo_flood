@@ -126,6 +126,56 @@ with st.form("gfm_form"):
             )
             _saved("gfm")
 
+# --- population ---------------------------------------------------------------
+population = cfg_dict.setdefault("population", {})
+with st.form("population_form"):
+    st.subheader("Exposure (WorldPop via Google Earth Engine)")
+    population_enabled = st.checkbox(
+        "Enabled", value=population.get("enabled", True), key="population_enabled"
+    )
+    collection = st.text_input(
+        "Collection",
+        value=population.get(
+            "collection", "WorldPop/GP/100m/pop_age_sex_cons_unadj"
+        ),
+    )
+    col1, col2, col3 = st.columns(3)
+    year = col1.number_input(
+        "Year", value=int(population.get("year", 2020)), min_value=2020, max_value=2020
+    )
+    population_band = col2.text_input(
+        "Population band", value=population.get("band", "population")
+    )
+    population_scale = col3.number_input(
+        "Scale [m]", value=int(population.get("scale", 100)), min_value=1
+    )
+    col4, col5 = st.columns(2)
+    population_crs = col4.text_input(
+        "CRS", value=population.get("crs", "EPSG:4326")
+    )
+    population_out = col5.text_input(
+        "Output name", value=population.get("out_name", "worldpop_2020.tif")
+    )
+    population_overwrite = st.checkbox(
+        "Overwrite existing", value=population.get("overwrite", False)
+    )
+    st.caption(
+        "The age/sex collection currently contains 2020 data. Its population "
+        "band is the estimated number of residents per grid cell."
+    )
+    if st.form_submit_button("Save population"):
+        population.update(
+            enabled=population_enabled,
+            collection=collection,
+            year=int(year),
+            band=population_band,
+            scale=int(population_scale),
+            crs=population_crs,
+            out_name=population_out,
+            overwrite=population_overwrite,
+        )
+        _saved("population")
+
 # --- flexth ---------------------------------------------------------------
 flexth = cfg_dict.setdefault("flexth", {})
 resample = flexth.setdefault("resample", {})

@@ -1,4 +1,4 @@
-"""Pipeline steps: dem (FABDEM), gfm (flood extent), flexth (water depth).
+"""Pipeline steps: DEM, flood extent, water depth and population exposure.
 
 Each step module exposes ``run(cfg, log) -> StepOutcome``.
 """

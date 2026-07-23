@@ -17,6 +17,7 @@ from streamlit_folium import st_folium
 from flood_pipeline.app import ui
 from flood_pipeline.config import ConfigError, vector_path
 from flood_pipeline.steps import flexth_step
+from flood_pipeline.steps.population import calculate_exposure
 
 st.set_page_config(page_title="Results", page_icon="🌊", layout="wide")
 st.title("Results")
@@ -60,6 +61,20 @@ else:
     scale, mask_values, label = 1.0, (999.0,), "water level [m]"
 
 show_gfm = st.checkbox("Overlay GFM flood mask (red)", value=False)
+population_path = cfg.population_path()
+show_population = st.checkbox(
+    "Overlay WorldPop population (purple)",
+    value=False,
+    disabled=not population_path.exists(),
+)
+
+try:
+    overlay = ui.raster_overlay(selected, cmap="Blues", mask_values=mask_values, scale=scale)
+except ValueError as e:
+    st.error(str(e))
+    st.info(
+        "This output contains no displayable water values. Check that "
+        "`gfm_flood_max.tif` contains nonzero flood pixels before running FLEXTH."
 use_max = st.checkbox(
     "Use whole-time GFM max instead of this scene",
     value=False,
@@ -104,6 +119,22 @@ col3.metric("max", f"{overlay.valid_max:.2f} m")
 col4.metric("valid pixels", f"{overlay.valid_fraction:.1%}")
 st.caption("Statistics exclude nodata (0) and the permanent-water sentinel (999).")
 
+if population_path.exists() and is_depth:
+    try:
+        exposure = calculate_exposure(population_path, selected)
+        st.subheader("Population exposure")
+        exp1, exp2, exp3 = st.columns(3)
+        exp1.metric("Population in AOI", f"{exposure.total_population:,.0f}")
+        exp2.metric("Estimated exposed population", f"{exposure.exposed_population:,.0f}")
+        exp3.metric("Exposed share", f"{exposure.exposed_percent:.1f}%")
+        st.caption(
+            "WorldPop 2020 residential population × fractional modeled flood "
+            "coverage per population cell. Values are estimates, not a live headcount."
+        )
+    except (OSError, ValueError) as e:
+        st.warning(f"Could not calculate population exposure: {e}")
+elif not population_path.exists():
+    st.info("Run the population step to add WorldPop exposure statistics.")
 # Base map holds only the tiles and its fit_bounds, so its rendered string stays
 # identical from rerun to rerun. streamlit-folium then never reloads it and the
 # browser keeps whatever pan/zoom the user set — stepping the slider only swaps
@@ -165,6 +196,17 @@ if show_gfm:
 if areas is not None and not areas.empty:
     ui.add_flood_area_layer(overlays, areas, selected_id=selected_area_id)
 
+if show_population and population_path.exists():
+    population_overlay = ui.raster_overlay(
+        population_path, cmap="Purples", mask_values=(0.0,), scale=1.0
+    )
+    folium.raster_layers.ImageOverlay(
+        image=population_overlay.rgba,
+        bounds=population_overlay.bounds,
+        opacity=0.65,
+        name="WorldPop 2020 population",
+    ).add_to(fmap)
+
 if cfg.aoi_abs_path.exists():
     ui.add_aoi_layer(overlays, cfg.aoi_abs_path)
 
@@ -205,6 +247,7 @@ if clicked is not None:
         st.session_state["results_probe"] = point
         st.rerun()  # redraw so the marker lands on the freshly clicked point
 
+st_folium(fmap, key="results_map", height=600, width="stretch", returned_objects=[])
 if probe is None:
     st.caption("Click the map to read the value at a point.")
 else:
@@ -225,7 +268,7 @@ else:
 
 st.pyplot(
     ui.colorbar_figure(overlay.vmin, overlay.vmax, "Blues", label),
-    use_container_width=False,
+    width="content",
 )
 st.caption(
     "Color range is the 2nd-98th percentile of valid pixels; the map is a "

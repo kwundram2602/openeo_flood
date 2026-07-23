@@ -12,6 +12,8 @@ import datetime as dt
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
+import odc.stac
 import odc.stac # used to create a (time, y, x) cube from the GFM STAC items
 import pandas as pd
 import pystac
@@ -135,6 +137,19 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
         items, bbox, band=cfg.gfm.band, resolution=cfg.gfm.resolution
     )
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
+
+    flood_max = flood.max(dim="time")
+    outputs = [_write_geotiff(flood_max, cfg.gfm_mask_path(), log)]
+    flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
+    log(f"detected flood pixels in temporal maximum: {flood_pixel_count}")
+    if flood_pixel_count == 0:
+        raise RuntimeError(
+            "GFM returned scenes, but ensemble_flood_extent is zero throughout "
+            "the AOI and date range. FLEXTH cannot estimate water depth without "
+            "flood pixels. Check the GFM raster/scene browser, use a known flooded "
+            "AOI or another date range; increasing max_items alone does not create "
+            "detections."
+        )
     # Clear per-scene rasters (and their polygons) from a previous run so the
     # on-disk set matches this run — skipped/empty scenes must not linger and
     # re-feed FLEXTH.
