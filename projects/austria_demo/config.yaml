@@ -8,11 +8,11 @@ aoi:
   path: aoi_drawn.geojson
 dem:
   enabled: true
-  delivery: drive
+  delivery: local
   scale: 30
   crs: EPSG:4326
   out_name: fabdem_dash.tif
-  overwrite: false
+  overwrite: true
   drive_folder: fabdem_exports
   drive_prefix: fabdem
 gfm:
@@ -21,12 +21,12 @@ gfm:
   collection: GFM
   band: ensemble_flood_extent
   temporal_extent:
-  - '2024-09-03'
-  - '2024-09-23'
+  - '2024-09-01'
+  - '2024-10-31'
   resolution: 0.0003
-  max_items: 20
+  max_items: 0
   aggregation: max
-  out_name: gfm_flood_max.tif
+  min_area_ha: 1.0
 flexth:
   enabled: true
   resample:
