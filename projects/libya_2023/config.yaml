@@ -21,8 +21,8 @@ gfm:
   collection: GFM
   band: ensemble_flood_extent
   temporal_extent:
-  - '2023-09-08'
-  - '2023-09-12'
+  - '2023-10-09'
+  - '2023-10-12'
   resolution: 0.0003
   max_items: 100
   aggregation: max
