@@ -1,8 +1,9 @@
-"""Results page: water-depth / water-level rasters on an interactive map.
+"""Results page: per-scene water-depth / water-level rasters on a map.
 
-FLEXTH conventions: WD_*.tif is uint16 in centimeters (displayed x0.01 as
-meters), WL_*.tif is float32 meters; 0 is nodata and 999 marks permanent
-water — both are masked out.
+One scene per GFM acquisition timestamp; step through scenes with the slider.
+FLEXTH conventions: WD_*.tif is uint16 centimeters (shown x0.01 as meters),
+WL_*.tif is float32 meters; 0 is nodata and 999 marks permanent water — both
+are masked out.
 """
 
 import folium
@@ -22,25 +23,47 @@ except ConfigError as e:
     st.error(str(e))
     st.stop()
 
-outputs = flexth_step.find_outputs(cfg.output_dir)
-if not outputs:
+scenes = flexth_step.find_scene_outputs(cfg.output_dir)
+if not scenes:
     st.info(
-        f"No WD_/WL_ rasters in `{cfg.output_dir}` yet — run the pipeline first "
-        "(Run page)."
+        f"No per-scene WD_/WL_ rasters under `{cfg.output_dir}` yet — run the "
+        "pipeline first (Run page)."
     )
     st.stop()
 
-selected = st.selectbox("Raster", outputs, format_func=lambda p: p.name)
-is_depth = selected.name.startswith("WD_")
-if is_depth:
+
+def _label(stamp: str) -> str:
+    """'2024-09-16_051230' -> '2024-09-16 05:12'."""
+    date, _, clock = stamp.partition("_")
+    return f"{date} {clock[:2]}:{clock[2:4]}" if clock else stamp
+
+
+stamps = list(scenes.keys())  # find_scene_outputs returns them sorted
+stamp = st.select_slider("Scene", options=stamps, format_func=_label)
+kind = st.radio("Layer", ["Water depth", "Water level"], horizontal=True)
+
+wanted = "WD" if kind == "Water depth" else "WL"
+selected = scenes[stamp].get(wanted)
+if selected is None:
+    st.warning(f"No {wanted} raster for scene {_label(stamp)}.")
+    st.stop()
+
+if wanted == "WD":
     scale, mask_values, label = 0.01, (0.0, 999.0), "water depth [m]"
 else:
     scale, mask_values, label = 1.0, (999.0,), "water level [m]"
 
 show_gfm = st.checkbox("Overlay GFM flood mask (red)", value=False)
+use_max = st.checkbox(
+    "Use whole-time GFM max instead of this scene",
+    value=False,
+    disabled=not show_gfm,
+)
 
 try:
-    overlay = ui.raster_overlay(selected, cmap="Blues", mask_values=mask_values, scale=scale)
+    overlay = ui.raster_overlay(
+        selected, cmap="Blues", mask_values=mask_values, scale=scale
+    )
 except ValueError as e:
     st.error(str(e))
     st.stop()
@@ -60,25 +83,30 @@ folium.raster_layers.ImageOverlay(
     name=selected.name,
 ).add_to(fmap)
 
-if show_gfm and cfg.gfm_mask_path().exists():
-    gfm_overlay = ui.raster_overlay(
-        cfg.gfm_mask_path(), cmap="Reds", mask_values=(0.0,), scale=1.0
-    )
-    folium.raster_layers.ImageOverlay(
-        image=gfm_overlay.rgba,
-        bounds=gfm_overlay.bounds,
-        opacity=0.6,
-        name="GFM flood max",
-    ).add_to(fmap)
-elif show_gfm:
-    st.warning(f"GFM mask not found: {cfg.gfm_mask_path()}")
+if show_gfm:
+    gfm_path = cfg.gfm_mask_path() if use_max else cfg.gfm_scene_path(stamp)
+    gfm_name = "GFM flood max" if use_max else f"GFM flood {_label(stamp)}"
+    if gfm_path.exists():
+        gfm_overlay = ui.raster_overlay(
+            gfm_path, cmap="Reds", mask_values=(0.0,), scale=1.0
+        )
+        folium.raster_layers.ImageOverlay(
+            image=gfm_overlay.rgba,
+            bounds=gfm_overlay.bounds,
+            opacity=0.6,
+            name=gfm_name,
+        ).add_to(fmap)
+    else:
+        st.warning(f"GFM raster not found: {gfm_path}")
 
 if cfg.aoi_abs_path.exists():
     ui.add_aoi_layer(fmap, cfg.aoi_abs_path)
 folium.LayerControl().add_to(fmap)
 fmap.fit_bounds(overlay.bounds)
 
-st_folium(fmap, key="results_map", height=600, use_container_width=True, returned_objects=[])
+st_folium(
+    fmap, key="results_map", height=600, use_container_width=True, returned_objects=[]
+)
 
 st.pyplot(
     ui.colorbar_figure(overlay.vmin, overlay.vmax, "Blues", label),

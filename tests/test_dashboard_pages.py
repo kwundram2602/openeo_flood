@@ -42,12 +42,31 @@ def test_page_renders_without_exception(page: Path, monkeypatch) -> None:
 
 
 @pytest.mark.skipif(
-    not flexth_step.find_outputs(load_config(DEMO_CONFIG).output_dir),
-    reason="needs FLEXTH outputs in the project's output dir (run the pipeline first)",
+    not flexth_step.find_scene_outputs(load_config(DEMO_CONFIG).output_dir),
+    reason="needs per-scene FLEXTH outputs (run the pipeline first)",
 )
 def test_results_page_renders_with_outputs(monkeypatch) -> None:
     result = _run_page(APP_DIR / "pages" / "5_Results.py", monkeypatch)
     assert not result.exception, f"5_Results.py raised: {result.exception}"
+
+
+def test_results_page_renders_when_no_scenes(tmp_path: Path, monkeypatch) -> None:
+    """With no per-scene outputs the page shows an info notice, not an error."""
+    import shutil
+
+    project = tmp_path / "empty_project"
+    project.mkdir()
+    src_cfg = DEMO_CONFIG.read_text(encoding="utf-8")
+    (project / "config.yaml").write_text(src_cfg, encoding="utf-8")
+    shutil.copy(DEMO_CONFIG.parent / "aoi_drawn.geojson", project / "aoi_drawn.geojson")
+
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(project / "config.yaml"))
+    test = AppTest.from_file(
+        str(APP_DIR / "pages" / "5_Results.py"), default_timeout=PAGE_TIMEOUT_SECONDS
+    )
+    test.run()
+    assert not test.exception
+    assert any("run the" in str(msg.value).lower() for msg in test.info)
 
 
 def test_create_project_from_template(tmp_path: Path) -> None:

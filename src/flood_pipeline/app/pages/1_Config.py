@@ -104,9 +104,8 @@ with st.form("gfm_form"):
         "Aggregation",
         GFM_AGGREGATIONS,
         index=GFM_AGGREGATIONS.index(gfm.get("aggregation", "max")),
-        help="the temporal max is always written (FLEXTH input); sum/both add the sum raster",
+        help="one raster is written per scene; the whole-time max is always written, sum/both add the sum raster",
     )
-    gfm_out = st.text_input("Output name", value=gfm.get("out_name", "gfm_flood_max.tif"))
     if st.form_submit_button("Save gfm"):
         if len(dates) != 2:
             st.error("Pick both a start and an end date.")
@@ -115,7 +114,7 @@ with st.form("gfm_form"):
                 enabled=gfm_enabled, stac_url=stac_url, collection=collection, band=band,
                 temporal_extent=[dates[0].isoformat(), dates[1].isoformat()],
                 resolution=float(resolution), max_items=int(max_items),
-                aggregation=aggregation, out_name=gfm_out,
+                aggregation=aggregation,
             )
             _saved("gfm")
 

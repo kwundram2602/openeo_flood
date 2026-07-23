@@ -127,8 +127,8 @@ with right:
     gfm_state = "✅" if cfg.gfm_mask_path().exists() else "—"
     st.markdown(
         f"- DEM `{cfg.dem.out_name}`: {dem_state}\n"
-        f"- GFM `{cfg.gfm.out_name}`: {gfm_state}\n"
-        f"- Water-depth outputs: {len(flexth_step.find_outputs(cfg.output_dir))}"
+        f"- GFM `{cfg.gfm_mask_path().name}`: {gfm_state}\n"
+        f"- Water-depth scenes: {len(flexth_step.find_scene_outputs(cfg.output_dir))}"
     )
 
 st.divider()
