@@ -87,6 +87,7 @@ class GfmConfig:
     max_items: int = 0  # optional safety cap on scenes loaded; 0 = fetch all
     aggregation: str = "max"  # "max" | "sum" | "both"; max is always written
     min_area_ha: float = 1.0  # smallest connected flood area kept; 0 = no filter
+    out_name: str = GFM_MAX_NAME  # legacy key; the max output name is fixed
 
 
 @dataclass
@@ -170,6 +171,10 @@ class PipelineConfig:
         ]
         return sorted(scenes, key=lambda p: p.name)
 
+    def population_path(self) -> Path:
+        """The WorldPop raster used for exposure calculations."""
+        return self.data_dir / self.population.out_name
+
     def scene_work_dir(self, stamp: str) -> Path:
         """FLEXTH work dir for one scene (own flood.tif/dtm.tif)."""
         return self.work_dir / stamp
@@ -187,10 +192,6 @@ def vector_path(raster: Path) -> Path:
     serves scene, max and test paths alike without needing any config state.
     """
     return raster.with_suffix(GFM_VECTOR_SUFFIX)
-
-    def population_path(self) -> Path:
-        """The WorldPop raster used for exposure calculations."""
-        return self.data_dir / self.population.out_name
 
 
 def _as_iso_date(value: object) -> str:
@@ -312,6 +313,10 @@ def validate(cfg: PipelineConfig) -> list[str]:
         errors.append(
             f"gfm.min_area_ha must be >= 0 (0 disables the filter), "
             f"got {cfg.gfm.min_area_ha!r}"
+        )
+    if cfg.gfm.out_name != GFM_MAX_NAME:
+        errors.append(
+            f"gfm.out_name must be {GFM_MAX_NAME!r}, got {cfg.gfm.out_name!r}"
         )
     errors.extend(_temporal_extent_errors(cfg.gfm.temporal_extent))
     unknown = set(cfg.flexth) - FLEXTH_ALLOWED_KEYS

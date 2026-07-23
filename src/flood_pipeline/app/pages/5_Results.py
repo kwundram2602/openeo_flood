@@ -46,7 +46,11 @@ def _label(stamp: str) -> str:
 
 
 stamps = list(scenes.keys())  # find_scene_outputs returns them sorted
-stamp = st.select_slider("Scene", options=stamps, format_func=_label)
+if len(stamps) == 1:
+    stamp = stamps[0]
+    st.caption(f"Scene: {_label(stamp)}")
+else:
+    stamp = st.select_slider("Scene", options=stamps, format_func=_label)
 kind = st.radio("Layer", ["Water depth", "Water level"], horizontal=True)
 
 wanted = "WD" if kind == "Water depth" else "WL"
@@ -68,13 +72,6 @@ show_population = st.checkbox(
     disabled=not population_path.exists(),
 )
 
-try:
-    overlay = ui.raster_overlay(selected, cmap="Blues", mask_values=mask_values, scale=scale)
-except ValueError as e:
-    st.error(str(e))
-    st.info(
-        "This output contains no displayable water values. Check that "
-        "`gfm_flood_max.tif` contains nonzero flood pixels before running FLEXTH."
 use_max = st.checkbox(
     "Use whole-time GFM max instead of this scene",
     value=False,
@@ -119,7 +116,7 @@ col3.metric("max", f"{overlay.valid_max:.2f} m")
 col4.metric("valid pixels", f"{overlay.valid_fraction:.1%}")
 st.caption("Statistics exclude nodata (0) and the permanent-water sentinel (999).")
 
-if population_path.exists() and is_depth:
+if population_path.exists() and wanted == "WD":
     try:
         exposure = calculate_exposure(population_path, selected)
         st.subheader("Population exposure")
@@ -247,7 +244,6 @@ if clicked is not None:
         st.session_state["results_probe"] = point
         st.rerun()  # redraw so the marker lands on the freshly clicked point
 
-st_folium(fmap, key="results_map", height=600, width="stretch", returned_objects=[])
 if probe is None:
     st.caption("Click the map to read the value at a point.")
 else:
