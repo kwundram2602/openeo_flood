@@ -19,7 +19,8 @@ import pystac_client # open stac catalog and search for items
 import rioxarray
 import xarray as xr
 
-from flood_pipeline.config import SCENE_STAMP_FORMAT, PipelineConfig
+from flood_pipeline import polygonize
+from flood_pipeline.config import SCENE_STAMP_FORMAT, PipelineConfig, vector_path
 from flood_pipeline.steps import LogFn, StepOutcome
 
 GFM_NODATA = 255
@@ -134,12 +135,15 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
         items, bbox, band=cfg.gfm.band, resolution=cfg.gfm.resolution
     )
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    # Clear per-scene rasters from a previous run so the on-disk set matches
-    # this run (skipped/empty scenes must not linger and re-feed FLEXTH).
+    # Clear per-scene rasters (and their polygons) from a previous run so the
+    # on-disk set matches this run — skipped/empty scenes must not linger and
+    # re-feed FLEXTH.
     for stale in cfg.gfm_scene_paths():
         stale.unlink()
+        vector_path(stale).unlink(missing_ok=True)
 
     outputs: list[Path] = []
+    scene_count = 0
     skipped = 0
     for time_value in flood["time"].values:
         stamp = pd.Timestamp(time_value).strftime(SCENE_STAMP_FORMAT)
@@ -148,13 +152,34 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
             log(f"skipped {stamp}: no flood pixels over the AOI")
             skipped += 1
             continue
-        outputs.append(_write_geotiff(scene, cfg.gfm_scene_path(stamp), log))
+        scene_count += 1
+        outputs.extend(_write_scene(cfg, scene, cfg.gfm_scene_path(stamp), stamp, log))
 
-    log(f"wrote {len(outputs)} flooded scene(s), skipped {skipped} empty scene(s)")
-    outputs.append(_write_geotiff(flood.max(dim="time"), cfg.gfm_mask_path(), log))
+    log(f"wrote {scene_count} flooded scene(s), skipped {skipped} empty scene(s)")
+    outputs.extend(
+        _write_scene(cfg, flood.max(dim="time"), cfg.gfm_mask_path(), "max", log)
+    )
     if cfg.gfm.aggregation in ("sum", "both"):
+        # No polygons here: sum > 0 covers exactly the same pixels as max > 0.
         outputs.append(_write_geotiff(flood.sum(dim="time"), cfg.gfm_sum_path(), log))
     return StepOutcome(outputs=outputs)
+
+
+def _write_scene(
+    cfg: PipelineConfig,
+    data: xr.DataArray,
+    path: Path,
+    scene: str,
+    log: LogFn,
+) -> list[Path]:
+    """Write a flood raster plus its connected-area polygons (when any survive)."""
+    written = [_write_geotiff(data, path, log)]
+    polygons = polygonize.write_flood_polygons(
+        path, min_area_ha=cfg.gfm.min_area_ha, scene=scene, log=log
+    )
+    if polygons is not None:
+        written.append(polygons)
+    return written
 
 
 def _write_geotiff(data: xr.DataArray, path: Path, log: LogFn) -> Path:

@@ -41,13 +41,74 @@ def test_page_renders_without_exception(page: Path, monkeypatch) -> None:
     assert not result.exception, f"{page.name} raised: {result.exception}"
 
 
-@pytest.mark.skipif(
+needs_outputs = pytest.mark.skipif(
     not flexth_step.find_scene_outputs(load_config(DEMO_CONFIG).output_dir),
     reason="needs per-scene FLEXTH outputs (run the pipeline first)",
 )
+
+
+@needs_outputs
 def test_results_page_renders_with_outputs(monkeypatch) -> None:
     result = _run_page(APP_DIR / "pages" / "5_Results.py", monkeypatch)
     assert not result.exception, f"5_Results.py raised: {result.exception}"
+
+
+@needs_outputs
+def test_results_page_jumps_to_a_flood_area(monkeypatch) -> None:
+    """Selecting an area must re-render cleanly; it re-frames the base map."""
+    from flood_pipeline.config import vector_path
+
+    cfg = load_config(DEMO_CONFIG)
+    scenes = flexth_step.find_scene_outputs(cfg.output_dir)
+    first_stamp = next(iter(scenes))
+    if not vector_path(cfg.gfm_scene_path(first_stamp)).exists():
+        pytest.skip("needs GFM flood-area polygons (re-run the gfm step)")
+
+    result = _run_page(APP_DIR / "pages" / "5_Results.py", monkeypatch)
+    picker = next(s for s in result.selectbox if s.label == "Flood area")
+    assert len(picker.options) > 1  # whole-AOI entry plus at least one area
+
+    result = picker.select(picker.options[1]).run()
+    assert not result.exception, f"5_Results.py raised: {result.exception}"
+
+
+@needs_outputs
+def test_switching_scenes_keeps_the_map_where_the_user_left_it(monkeypatch) -> None:
+    """Stepping the scene slider must not undo a jump.
+
+    The slider changes which polygons the picker offers, so Streamlit resets the
+    selection — that must not be mistaken for the user asking to zoom back out.
+    """
+    from flood_pipeline.config import vector_path
+
+    cfg = load_config(DEMO_CONFIG)
+    stamps = list(flexth_step.find_scene_outputs(cfg.output_dir))
+    if len(stamps) < 2 or not all(
+        vector_path(cfg.gfm_scene_path(s)).exists() for s in stamps
+    ):
+        pytest.skip("needs two scenes with GFM flood-area polygons")
+
+    result = _run_page(APP_DIR / "pages" / "5_Results.py", monkeypatch)
+    picker = next(s for s in result.selectbox if s.label == "Flood area")
+    result = picker.select(picker.options[1]).run()
+
+    jumped = result.session_state["results_view_bounds"]
+    assert jumped != result.session_state["results_home_bounds"]
+
+    # SelectSlider.options are the *formatted* labels while .value is the raw
+    # stamp, so step by index rather than comparing the two.
+    slider = next(s for s in result.select_slider if s.label == "Scene")
+    before = slider.value
+    other = 1 if before == stamps[0] else 0
+    result = slider.set_value(slider.options[other]).run()
+    assert not result.exception, f"5_Results.py raised: {result.exception}"
+
+    moved_on = next(s for s in result.select_slider if s.label == "Scene")
+    assert moved_on.value != before, "the scene slider did not actually step"
+    picker = next(s for s in result.selectbox if s.label == "Flood area")
+    assert picker.value == "— whole AOI —"  # Streamlit drops the stale selection
+
+    assert result.session_state["results_view_bounds"] == jumped
 
 
 def test_results_page_renders_when_no_scenes(tmp_path: Path, monkeypatch) -> None:
@@ -67,6 +128,98 @@ def test_results_page_renders_when_no_scenes(tmp_path: Path, monkeypatch) -> Non
     test.run()
     assert not test.exception
     assert any("run the" in str(msg.value).lower() for msg in test.info)
+
+
+def test_flood_area_label_shows_rank_and_size() -> None:
+    from flood_pipeline.app import ui
+
+    assert ui.flood_area_label(1, 124.34) == "#1 — 124.3 ha"
+    assert ui.flood_area_label(12, 0.09) == "#12 — 0.1 ha"
+
+
+def test_jump_bounds_pad_around_the_geometry() -> None:
+    from shapely.geometry import box
+
+    from flood_pipeline.app import ui
+
+    (south, west), (north, east) = ui.jump_bounds(box(10.0, 47.0, 11.0, 48.0))
+    assert west < 10.0 and south < 47.0
+    assert east > 11.0 and north > 48.0
+    assert (east - west) == pytest.approx(1.5, rel=1e-6)  # 1 degree + 25% each side
+
+
+def test_jump_bounds_stay_usable_for_a_tiny_area() -> None:
+    """A single-pixel area must not collapse the map to a degenerate box."""
+    from shapely.geometry import box
+
+    from flood_pipeline.app import ui
+
+    (south, west), (north, east) = ui.jump_bounds(box(10.0, 47.0, 10.0001, 47.0001))
+    assert east - west >= 0.002
+    assert north - south >= 0.002
+
+
+def test_flood_areas_is_none_when_the_file_is_missing(tmp_path: Path) -> None:
+    from flood_pipeline.app import ui
+
+    assert ui.flood_areas(tmp_path / "gfm_flood_max.gpkg") is None
+
+
+def test_flood_areas_reads_the_polygons_largest_first(tmp_path: Path) -> None:
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    from flood_pipeline import polygonize
+    from flood_pipeline.app import ui
+    from flood_pipeline.config import vector_path
+
+    mask = np.zeros((12, 12), dtype="uint8")
+    mask[1:5, 1:5] = 1
+    mask[7:9, 1:3] = 1
+    raster = tmp_path / "gfm_flood_max.tif"
+    with rasterio.open(
+        raster,
+        "w",
+        driver="GTiff",
+        height=12,
+        width=12,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:32633",
+        transform=from_origin(500_000.0, 5_000_000.0, 30.0, 30.0),
+    ) as dst:
+        dst.write(mask, 1)
+    polygonize.write_flood_polygons(
+        raster, min_area_ha=0.0, scene="max", log=lambda _line: None
+    )
+
+    areas = ui.flood_areas(vector_path(raster))
+
+    assert list(areas["area_id"]) == [1, 2]
+    assert areas["area_ha"].iloc[0] > areas["area_ha"].iloc[1]
+
+
+def test_flood_area_layer_emphasizes_the_selected_area() -> None:
+    import folium
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    from flood_pipeline.app import ui
+
+    areas = gpd.GeoDataFrame(
+        {"area_id": [1, 2], "area_ha": [12.0, 3.0]},
+        geometry=[box(10.0, 47.0, 10.1, 47.1), box(11.0, 48.0, 11.05, 48.05)],
+        crs="EPSG:4326",
+    )
+    group = folium.FeatureGroup(name="test")
+
+    ui.add_flood_area_layer(group, areas, selected_id=2)
+
+    layers = list(group._children.values())
+    assert len(layers) == 2
+    weights = [layer.style_function({})["weight"] for layer in layers]
+    assert weights[1] > weights[0]  # the selected area is drawn heavier
 
 
 def test_create_project_from_template(tmp_path: Path) -> None:

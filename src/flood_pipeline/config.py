@@ -32,6 +32,9 @@ GFM_MAX_NAME = f"{GFM_SCENE_PREFIX}_max.tif"
 GFM_SUM_NAME = f"{GFM_SCENE_PREFIX}_sum.tif"
 SCENE_STAMP_FORMAT = "%Y-%m-%d_%H%M%S"  # UTC acquisition timestamp, filename-safe
 GFM_SCENE_GLOB = f"{GFM_SCENE_PREFIX}_*.tif"
+# Connected flood areas derived from a flood raster live next to it, same stem.
+GFM_VECTOR_SUFFIX = ".gpkg"
+FLOOD_AREA_LAYER = "flood_areas"
 # Per-scene rasters carry a timestamp; the max/sum aggregates do not.
 GFM_SCENE_STAMP_RE = re.compile(
     rf"{GFM_SCENE_PREFIX}_(\d{{4}}-\d{{2}}-\d{{2}}_\d{{6}})\.tif$"
@@ -83,6 +86,7 @@ class GfmConfig:
     resolution: float = 0.0003  # degrees (EPSG:4326)
     max_items: int = 0  # optional safety cap on scenes loaded; 0 = fetch all
     aggregation: str = "max"  # "max" | "sum" | "both"; max is always written
+    min_area_ha: float = 1.0  # smallest connected flood area kept; 0 = no filter
 
 
 @dataclass
@@ -158,6 +162,16 @@ class PipelineConfig:
     def scene_output_dir(self, stamp: str) -> Path:
         """FLEXTH output dir for one scene's WD_/WL_ rasters."""
         return self.output_dir / stamp
+
+
+def vector_path(raster: Path) -> Path:
+    """The flood-area polygon file belonging to a flood raster.
+
+    A plain name derivation (``…/gfm_flood_max.tif`` -> ``…/gfm_flood_max.gpkg``),
+    so it is a free function rather than a :class:`PipelineConfig` method: it
+    serves scene, max and test paths alike without needing any config state.
+    """
+    return raster.with_suffix(GFM_VECTOR_SUFFIX)
 
 
 def _as_iso_date(value: object) -> str:
@@ -264,6 +278,11 @@ def validate(cfg: PipelineConfig) -> list[str]:
     if cfg.gfm.aggregation not in GFM_AGGREGATIONS:
         errors.append(
             f"gfm.aggregation must be one of {GFM_AGGREGATIONS}, got {cfg.gfm.aggregation!r}"
+        )
+    if cfg.gfm.min_area_ha < 0:
+        errors.append(
+            f"gfm.min_area_ha must be >= 0 (0 disables the filter), "
+            f"got {cfg.gfm.min_area_ha!r}"
         )
     errors.extend(_temporal_extent_errors(cfg.gfm.temporal_extent))
     unknown = set(cfg.flexth) - FLEXTH_ALLOWED_KEYS

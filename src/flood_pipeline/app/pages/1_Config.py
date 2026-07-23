@@ -94,17 +94,25 @@ with st.form("gfm_form"):
         ),
         help="Pick the start and end date; the GFM Scenes page can set this from a search",
     )
-    col3, col4, col5 = st.columns(3)
+    col3, col4, col5, col6 = st.columns(4)
     resolution = col3.number_input(
         "Resolution [deg]", value=float(gfm.get("resolution", 0.0003)),
         min_value=0.00001, step=0.0001, format="%.5f",
     )
-    max_items = col4.number_input("Max items", value=int(gfm.get("max_items", 20)), min_value=1)
+    max_items = col4.number_input(
+        "Max items", value=int(gfm.get("max_items", 0)), min_value=0,
+        help="safety cap on the number of scenes loaded; 0 = keep every scene in the window",
+    )
     aggregation = col5.selectbox(
         "Aggregation",
         GFM_AGGREGATIONS,
         index=GFM_AGGREGATIONS.index(gfm.get("aggregation", "max")),
         help="one raster is written per scene; the whole-time max is always written, sum/both add the sum raster",
+    )
+    min_area_ha = col6.number_input(
+        "Min flood area [ha]", value=float(gfm.get("min_area_ha", 1.0)),
+        min_value=0.0, step=0.5,
+        help="smallest connected flood area kept as a polygon; 0 = keep every speck",
     )
     if st.form_submit_button("Save gfm"):
         if len(dates) != 2:
@@ -114,7 +122,7 @@ with st.form("gfm_form"):
                 enabled=gfm_enabled, stac_url=stac_url, collection=collection, band=band,
                 temporal_extent=[dates[0].isoformat(), dates[1].isoformat()],
                 resolution=float(resolution), max_items=int(max_items),
-                aggregation=aggregation,
+                aggregation=aggregation, min_area_ha=float(min_area_ha),
             )
             _saved("gfm")
 

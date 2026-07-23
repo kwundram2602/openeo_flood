@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from flood_pipeline.config import ConfigError, load_config, save_config, to_dict, validate
+from flood_pipeline.config import (
+    ConfigError,
+    load_config,
+    save_config,
+    to_dict,
+    validate,
+    vector_path,
+)
 
 MINIMAL_CONFIG = {
     "project": {"name": "test_run", "gee_project": "ee-test"},
@@ -35,6 +42,7 @@ def test_load_fills_defaults(config_file: Path) -> None:
     assert cfg.project.data_dir == "flood_data"  # default
     assert cfg.dem.scale == 30  # default
     assert cfg.gfm.aggregation == "max"  # default
+    assert cfg.gfm.min_area_ha == 1.0  # default
     assert cfg.flexth["resample"]["crs"] == "EPSG:32633"
 
 
@@ -74,6 +82,16 @@ def test_gfm_scene_path_and_paths(config_file: Path, tmp_path: Path) -> None:
         "gfm_flood_2024-09-16_051230.tif",
         "gfm_flood_2024-09-18_052000.tif",
     ]
+
+
+def test_vector_path_swaps_the_raster_suffix(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    assert vector_path(cfg.gfm_mask_path()).name == "gfm_flood_max.gpkg"
+    assert (
+        vector_path(cfg.gfm_scene_path("2024-09-16_051230")).name
+        == "gfm_flood_2024-09-16_051230.gpkg"
+    )
+    assert vector_path(cfg.gfm_mask_path()).parent == cfg.data_dir
 
 
 def test_scene_dirs(config_file: Path) -> None:
@@ -160,6 +178,14 @@ def test_validate_bad_aggregation(config_file: Path) -> None:
     cfg = load_config(config_file)
     cfg.gfm.aggregation = "median"
     assert any("gfm.aggregation" in e for e in validate(cfg))
+
+
+def test_validate_negative_min_area(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    cfg.gfm.min_area_ha = -1.0
+    assert any("gfm.min_area_ha" in e for e in validate(cfg))
+    cfg.gfm.min_area_ha = 0.0  # 0 is legal: it means "no filter"
+    assert not any("gfm.min_area_ha" in e for e in validate(cfg))
 
 
 @pytest.mark.parametrize(

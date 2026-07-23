@@ -3,6 +3,7 @@
 import datetime as dt
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
@@ -10,7 +11,7 @@ import rioxarray  # noqa: F401  (registers the .rio accessor)
 import xarray as xr
 import yaml
 
-from flood_pipeline.config import load_config
+from flood_pipeline.config import FLOOD_AREA_LAYER, load_config, vector_path
 from flood_pipeline.steps import gfm
 
 CONFIG = {
@@ -72,9 +73,44 @@ def test_run_removes_stale_scene_rasters(cfg, monkeypatch) -> None:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     stale = cfg.gfm_scene_path("2024-01-01_000000")
     stale.write_bytes(b"")
+    stale_polygons = vector_path(stale)
+    stale_polygons.write_bytes(b"")
 
     gfm.run(cfg, log=lambda _line: None)
     assert not stale.exists()
+    assert not stale_polygons.exists()  # the raster's polygons go with it
+
+
+def test_run_writes_flood_polygons_beside_every_raster(cfg, monkeypatch) -> None:
+    monkeypatch.setattr(gfm, "aoi_bbox_4326", lambda _p: (0.0, 0.0, 1.0, 1.0))
+    monkeypatch.setattr(gfm, "search_gfm_items", lambda *a, **k: [object()] * 3)
+    monkeypatch.setattr(gfm, "load_flood_cube", lambda *a, **k: _fake_cube())
+
+    outcome = gfm.run(cfg, log=lambda _line: None)
+
+    scene_polygons = vector_path(cfg.gfm_scene_path("2024-09-16_051230"))
+    max_polygons = vector_path(cfg.gfm_mask_path())
+    assert scene_polygons.exists()
+    assert max_polygons.exists()
+    assert scene_polygons in outcome.outputs
+    assert max_polygons in outcome.outputs
+
+    areas = gpd.read_file(scene_polygons, layer=FLOOD_AREA_LAYER)
+    assert list(areas["area_id"]) == [1]  # the fake cube floods one solid block
+    assert set(areas["scene"]) == {"2024-09-16_051230"}
+
+
+def test_run_skips_polygons_for_the_sum_raster(cfg, monkeypatch) -> None:
+    """sum > 0 covers exactly the same pixels as max > 0 — no duplicate polygons."""
+    monkeypatch.setattr(gfm, "aoi_bbox_4326", lambda _p: (0.0, 0.0, 1.0, 1.0))
+    monkeypatch.setattr(gfm, "search_gfm_items", lambda *a, **k: [object()] * 3)
+    monkeypatch.setattr(gfm, "load_flood_cube", lambda *a, **k: _fake_cube())
+    cfg.gfm.aggregation = "both"
+
+    gfm.run(cfg, log=lambda _line: None)
+
+    assert cfg.gfm_sum_path().exists()
+    assert not vector_path(cfg.gfm_sum_path()).exists()
 
 
 def test_has_flood_predicate() -> None:

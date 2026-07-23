@@ -32,7 +32,7 @@ uv run flood-pipeline dashboard
 | Step     | Source                                                | Output (defaults, inside the project folder)              |
 |----------|-------------------------------------------------------|-----------------------------------------------------------|
 | `dem`    | FABDEM mosaic via Google Earth Engine                 | `flood_data/fabdem.tif`                                    |
-| `gfm`    | GFM `ensemble_flood_extent` via EODC STAC (public)    | `flood_data/gfm_flood_max.tif` (+ optional `..._sum.tif`)  |
+| `gfm`    | GFM `ensemble_flood_extent` via EODC STAC (public)    | `flood_data/gfm_flood_<stamp>.tif` per scene + `..._max.tif` (+ optional `..._sum.tif`), each with a `.gpkg` of its connected flood areas |
 | `flexth` | FLEXTH `pipeline` (resample -> prepare-dtm -> run)    | `preprocessed/{flood,dtm}.tif`, `wl_wd_out/WD_*/WL_*.tif`  |
 
 Each run is a **project folder** holding its own `config.yaml` and all data;
@@ -100,8 +100,9 @@ gfm:
   resolution: 0.0003          # degrees (EPSG:4326)
   max_items: 20
   aggregation: max            # max | sum | both — the temporal max is always
-                              # written (it feeds flexth); sum/both add the sum raster
-  out_name: gfm_flood_max.tif
+                              # written as a reference overlay; sum/both add the sum raster
+  min_area_ha: 1.0            # smallest connected flood area written as a polygon;
+                              # 0 keeps every speck
 
 flexth:                       # passed through into work_dir/flexth_config.yaml;
   enabled: true               # io + merge sections are generated automatically

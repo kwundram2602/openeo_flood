@@ -12,6 +12,7 @@ wheels/
 t_kjell
 **.tif
 .claude
+docs
 
 # Per-project data (DEM/GFM downloads, FLEXTH intermediates and outputs)
 # but keep each project's config and AOI vectors under version control.
