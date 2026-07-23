@@ -1,5 +1,5 @@
 project:
-  name: ancona_2022
+  name: spain_2024
   gee_project: ee-davidvoellner
   data_dir: flood_data
   work_dir: preprocessed
@@ -21,8 +21,8 @@ gfm:
   collection: GFM
   band: ensemble_flood_extent
   temporal_extent:
-  - '2022-09-15'
-  - '2022-09-19'
+  - '2024-10-28'
+  - '2024-11-04'
   resolution: 0.0003
   max_items: 100
   aggregation: max
