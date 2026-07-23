@@ -62,6 +62,9 @@ def create_project(name: str, parent: Path, template: dict | None) -> Path:
     cfg_dict = copy.deepcopy(template) if template else {}
     cfg_dict.setdefault("project", {})["name"] = name
     cfg_dict.setdefault("aoi", {})["path"] = "aoi_drawn.geojson"
+    # Every new project gets its data folder up front.
+    data_dir = cfg_dict.get("project", {}).get("data_dir", "flood_data")
+    (project_dir / data_dir).mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         yaml.safe_dump(cfg_dict, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
@@ -153,7 +156,10 @@ def raster_overlay(
     sentinel) become transparent, and values are multiplied by ``scale``
     (0.01 converts FLEXTH's WD centimeters to meters).
     """
-    return _build_overlay(str(path), path.stat().st_mtime, cmap, max_dim, mask_values, scale)
+    fields = _build_overlay(
+        str(path), path.stat().st_mtime, cmap, max_dim, mask_values, scale
+    )
+    return RasterOverlay(**fields)
 
 
 @st.cache_data(show_spinner="rendering raster overlay ...")
@@ -164,7 +170,14 @@ def _build_overlay(
     max_dim: int,
     mask_values: tuple[float, ...],
     scale: float,
-) -> RasterOverlay:
+) -> dict:
+    """Compute the overlay fields as a plain dict.
+
+    Returns a dict rather than a :class:`RasterOverlay` so the cached value
+    embeds no custom-class reference: pickling it never depends on the class
+    identity in ``sys.modules``, which a live module reload (editing this file
+    while the app runs) would otherwise invalidate.
+    """
     import rioxarray
 
     data = rioxarray.open_rasterio(path_str, masked=True).squeeze(drop=True)
@@ -196,16 +209,16 @@ def _build_overlay(
     rgba[..., 3] = np.where(finite_mask, OVERLAY_OPACITY, 0.0)
 
     left, bottom, right, top = data.rio.bounds()
-    return RasterOverlay(
-        rgba=(rgba * 255).astype("uint8"),
-        bounds=[[float(bottom), float(left)], [float(top), float(right)]],
-        vmin=vmin,
-        vmax=vmax,
-        valid_min=float(finite.min()),
-        valid_mean=float(finite.mean()),
-        valid_max=float(finite.max()),
-        valid_fraction=float(finite.size / values.size),
-    )
+    return {
+        "rgba": (rgba * 255).astype("uint8"),
+        "bounds": [[float(bottom), float(left)], [float(top), float(right)]],
+        "vmin": vmin,
+        "vmax": vmax,
+        "valid_min": float(finite.min()),
+        "valid_mean": float(finite.mean()),
+        "valid_max": float(finite.max()),
+        "valid_fraction": float(finite.size / values.size),
+    }
 
 
 def colorbar_figure(vmin: float, vmax: float, cmap: str, label: str):

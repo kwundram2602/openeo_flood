@@ -60,6 +60,7 @@ def test_create_project_from_template(tmp_path: Path) -> None:
     }
     created = ui.create_project("new_region", tmp_path / "runs", template)
     assert created == tmp_path / "runs" / "new_region" / "config.yaml"
+    assert (tmp_path / "runs" / "new_region" / "flood_data").is_dir()
 
     cfg = load_config(created)
     assert cfg.project.name == "new_region"
