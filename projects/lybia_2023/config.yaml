@@ -1,5 +1,5 @@
 project:
-  name: austria_demo
+  name: lybia_2023
   gee_project: ee-davidvoellner
   data_dir: flood_data
   work_dir: preprocessed
@@ -21,10 +21,10 @@ gfm:
   collection: GFM
   band: ensemble_flood_extent
   temporal_extent:
-  - '2024-09-16'
-  - '2024-09-22'
+  - '2023-09-03'
+  - '2023-09-22'
   resolution: 0.0003
-  max_items: 100
+  max_items: 20
   aggregation: max
   out_name: gfm_flood_max.tif
 population:
@@ -60,7 +60,7 @@ flexth:
       size_gaps_close: 0.05
       border_percentile: 0.5
       max_number_neighbors: 100
-      min_flood_size: 50
+      min_flood_size: 100
       inner_quantile: 0.98
       inverse_dist_exp: 2
       max_propagation_distance: 10
