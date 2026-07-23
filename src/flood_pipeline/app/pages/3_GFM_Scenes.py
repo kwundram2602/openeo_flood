@@ -12,8 +12,6 @@ import streamlit as st
 from flood_pipeline.app import ui
 from flood_pipeline.steps import gfm
 
-SEARCH_MAX_ITEMS = 100
-
 st.set_page_config(page_title="GFM Scenes", page_icon="🛰️", layout="wide")
 st.title("GFM scene browser")
 
@@ -43,7 +41,6 @@ if search_clicked:
             [search_start.isoformat(), search_end.isoformat()],
             stac_url=cfg.gfm.stac_url,
             collection=cfg.gfm.collection,
-            max_items=SEARCH_MAX_ITEMS,
         )
     except Exception as e:  # deliberate: network/AOI errors become page messages
         st.error(f"Search failed: {e}")

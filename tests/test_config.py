@@ -5,8 +5,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from flood_pipeline import config as config_module
-from flood_pipeline.config import ConfigError, load_config, save_config, to_dict, validate
+from flood_pipeline.config import (
+    ConfigError,
+    load_config,
+    save_config,
+    to_dict,
+    validate,
+    vector_path,
+)
 
 MINIMAL_CONFIG = {
     "project": {"name": "test_run", "gee_project": "ee-test"},
@@ -38,6 +44,7 @@ def test_load_fills_defaults(config_file: Path) -> None:
     assert cfg.gfm.aggregation == "max"  # default
     assert cfg.population.year == 2020
     assert cfg.population.band == "population"
+    assert cfg.gfm.min_area_ha == 1.0  # default
     assert cfg.flexth["resample"]["crs"] == "EPSG:32633"
 
 
@@ -60,11 +67,41 @@ def test_absolute_paths_kept(config_file: Path, tmp_path: Path) -> None:
     assert cfg.data_dir == absolute
 
 
-def test_sum_out_name_derived() -> None:
-    gfm = config_module.GfmConfig(out_name="gfm_flood_max.tif")
-    assert gfm.sum_out_name() == "gfm_flood_sum.tif"
-    gfm = config_module.GfmConfig(out_name="flood.tif")
-    assert gfm.sum_out_name() == "flood_sum.tif"
+def test_gfm_scene_path_and_paths(config_file: Path, tmp_path: Path) -> None:
+    cfg = load_config(config_file)
+    assert cfg.gfm_mask_path().name == "gfm_flood_max.tif"
+    assert cfg.gfm_sum_path().name == "gfm_flood_sum.tif"
+    assert cfg.gfm_scene_path("2024-09-16_051230").name == "gfm_flood_2024-09-16_051230.tif"
+
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.data_dir / "gfm_flood_2024-09-18_052000.tif").write_bytes(b"")
+    (cfg.data_dir / "gfm_flood_2024-09-16_051230.tif").write_bytes(b"")
+    cfg.gfm_mask_path().write_bytes(b"")   # must be excluded
+    cfg.gfm_sum_path().write_bytes(b"")    # must be excluded
+    (cfg.data_dir / "unrelated.tif").write_bytes(b"")
+
+    names = [p.name for p in cfg.gfm_scene_paths()]
+    assert names == [
+        "gfm_flood_2024-09-16_051230.tif",
+        "gfm_flood_2024-09-18_052000.tif",
+    ]
+
+
+def test_vector_path_swaps_the_raster_suffix(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    assert vector_path(cfg.gfm_mask_path()).name == "gfm_flood_max.gpkg"
+    assert (
+        vector_path(cfg.gfm_scene_path("2024-09-16_051230")).name
+        == "gfm_flood_2024-09-16_051230.gpkg"
+    )
+    assert vector_path(cfg.gfm_mask_path()).parent == cfg.data_dir
+
+
+def test_scene_dirs(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    stamp = "2024-09-16_051230"
+    assert cfg.scene_work_dir(stamp) == cfg.work_dir / stamp
+    assert cfg.scene_output_dir(stamp) == cfg.output_dir / stamp
 
 
 def test_round_trip_preserves_content(config_file: Path, tmp_path: Path) -> None:
@@ -151,6 +188,14 @@ def test_validate_bad_aggregation(config_file: Path) -> None:
     cfg = load_config(config_file)
     cfg.gfm.aggregation = "median"
     assert any("gfm.aggregation" in e for e in validate(cfg))
+
+
+def test_validate_negative_min_area(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    cfg.gfm.min_area_ha = -1.0
+    assert any("gfm.min_area_ha" in e for e in validate(cfg))
+    cfg.gfm.min_area_ha = 0.0  # 0 is legal: it means "no filter"
+    assert not any("gfm.min_area_ha" in e for e in validate(cfg))
 
 
 @pytest.mark.parametrize(

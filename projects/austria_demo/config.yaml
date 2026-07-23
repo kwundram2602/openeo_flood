@@ -12,7 +12,7 @@ dem:
   scale: 30
   crs: EPSG:4326
   out_name: fabdem_dash.tif
-  overwrite: false
+  overwrite: true
   drive_folder: fabdem_exports
   drive_prefix: fabdem
 gfm:

@@ -14,12 +14,13 @@ from pathlib import Path
 import folium
 import geopandas as gpd
 import matplotlib
+import matplotlib.colors
 import numpy as np
 import streamlit as st
 import yaml
 
 from flood_pipeline.cli import CONFIG_ENV_VAR
-from flood_pipeline.config import PipelineConfig, load_config
+from flood_pipeline.config import FLOOD_AREA_LAYER, PipelineConfig, load_config
 
 DEFAULT_CONFIG_NAME = "config.yaml"
 PROJECTS_DIR_NAME = "projects"
@@ -62,6 +63,9 @@ def create_project(name: str, parent: Path, template: dict | None) -> Path:
     cfg_dict = copy.deepcopy(template) if template else {}
     cfg_dict.setdefault("project", {})["name"] = name
     cfg_dict.setdefault("aoi", {})["path"] = "aoi_drawn.geojson"
+    # Every new project gets its data folder up front.
+    data_dir = cfg_dict.get("project", {}).get("data_dir", "flood_data")
+    (project_dir / data_dir).mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         yaml.safe_dump(cfg_dict, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
@@ -110,7 +114,7 @@ def aoi_outline(aoi_path: Path) -> gpd.GeoDataFrame:
     return gpd.read_file(aoi_path).to_crs(epsg=4326)
 
 
-def add_aoi_layer(fmap: folium.Map, aoi_path: Path) -> None:
+def add_aoi_layer(parent: folium.Map | folium.FeatureGroup, aoi_path: Path) -> None:
     outline = aoi_outline(aoi_path)
     folium.GeoJson(
         outline.__geo_interface__,
@@ -121,7 +125,60 @@ def add_aoi_layer(fmap: folium.Map, aoi_path: Path) -> None:
             "fill": False,
             "dashArray": "6 4",
         },
-    ).add_to(fmap)
+    ).add_to(parent)
+
+
+def flood_areas(vector: Path) -> gpd.GeoDataFrame | None:
+    """Connected flood areas of a GFM raster, largest first; None if not written.
+
+    The file is absent for data produced before the polygons existed, and for
+    rasters whose areas all fell below ``gfm.min_area_ha``.
+    """
+    if not vector.exists():
+        return None
+    return gpd.read_file(vector, layer=FLOOD_AREA_LAYER)
+
+
+def flood_area_label(area_id: int, area_ha: float) -> str:
+    """Selectbox label for one flood area: ``#1 — 124.3 ha``."""
+    return f"#{area_id} — {area_ha:.1f} ha"
+
+
+def jump_bounds(geometry, *, pad_fraction: float = 0.25, min_pad: float = 0.001):
+    """A folium ``fit_bounds`` box around a geometry, with breathing room.
+
+    Padded by a fraction of the geometry's own size so large and small areas
+    both land sensibly framed, but never by less than ``min_pad`` degrees —
+    a single-pixel area would otherwise fit-bounds to a degenerate box and the
+    map would slam to maximum zoom.
+    """
+    west, south, east, north = geometry.bounds
+    pad_x = max((east - west) * pad_fraction, min_pad)
+    pad_y = max((north - south) * pad_fraction, min_pad)
+    return [[south - pad_y, west - pad_x], [north + pad_y, east + pad_x]]
+
+
+def add_flood_area_layer(
+    parent: folium.Map | folium.FeatureGroup,
+    areas: gpd.GeoDataFrame,
+    *,
+    selected_id: int | None = None,
+) -> None:
+    """Draw the flood-area outlines, the selected one emphasized."""
+    for row in areas.itertuples():
+        chosen = selected_id is not None and row.area_id == selected_id
+        folium.GeoJson(
+            row.geometry.__geo_interface__,
+            name=f"flood area {row.area_id}",
+            # Bind `chosen` per iteration: the style function is called later,
+            # when the loop variable would already point at the last row.
+            style_function=lambda _feat, chosen=chosen: {
+                "color": "#ff7f0e" if chosen else "#8c564b",
+                "weight": 4 if chosen else 2,
+                "fill": False,
+            },
+            tooltip=flood_area_label(row.area_id, row.area_ha),
+        ).add_to(parent)
 
 
 @dataclass
@@ -145,6 +202,7 @@ def raster_overlay(
     max_dim: int = 1500,
     mask_values: tuple[float, ...] = (),
     scale: float = 1.0,
+    solid_color: str | None = None,
 ) -> RasterOverlay:
     """Load a raster as a colormapped RGBA overlay in EPSG:4326.
 
@@ -152,8 +210,15 @@ def raster_overlay(
     reprojection, ``mask_values`` (e.g. nodata 0 and the 999 permanent-water
     sentinel) become transparent, and values are multiplied by ``scale``
     (0.01 converts FLEXTH's WD centimeters to meters).
+
+    ``solid_color`` paints every valid pixel in that one color instead of
+    colormapping the values — the right choice for a binary mask, whose single
+    remaining value would otherwise land at the washed-out low end of ``cmap``.
     """
-    return _build_overlay(str(path), path.stat().st_mtime, cmap, max_dim, mask_values, scale)
+    fields = _build_overlay(
+        str(path), path.stat().st_mtime, cmap, max_dim, mask_values, scale, solid_color
+    )
+    return RasterOverlay(**fields)
 
 
 @st.cache_data(show_spinner="rendering raster overlay ...")
@@ -164,7 +229,15 @@ def _build_overlay(
     max_dim: int,
     mask_values: tuple[float, ...],
     scale: float,
-) -> RasterOverlay:
+    solid_color: str | None = None,
+) -> dict:
+    """Compute the overlay fields as a plain dict.
+
+    Returns a dict rather than a :class:`RasterOverlay` so the cached value
+    embeds no custom-class reference: pickling it never depends on the class
+    identity in ``sys.modules``, which a live module reload (editing this file
+    while the app runs) would otherwise invalidate.
+    """
     import rioxarray
 
     data = rioxarray.open_rasterio(path_str, masked=True).squeeze(drop=True)
@@ -191,21 +264,60 @@ def _build_overlay(
     if vmax <= vmin:
         vmax = vmin + 1e-6
 
-    normalized = np.clip((values - vmin) / (vmax - vmin), 0.0, 1.0)
-    rgba = matplotlib.colormaps[cmap](np.nan_to_num(normalized, nan=0.0))
+    if solid_color is not None:
+        rgba = np.tile(matplotlib.colors.to_rgba(solid_color), values.shape + (1,))
+    else:
+        normalized = np.clip((values - vmin) / (vmax - vmin), 0.0, 1.0)
+        rgba = matplotlib.colormaps[cmap](np.nan_to_num(normalized, nan=0.0))
     rgba[..., 3] = np.where(finite_mask, OVERLAY_OPACITY, 0.0)
 
     left, bottom, right, top = data.rio.bounds()
-    return RasterOverlay(
-        rgba=(rgba * 255).astype("uint8"),
-        bounds=[[float(bottom), float(left)], [float(top), float(right)]],
-        vmin=vmin,
-        vmax=vmax,
-        valid_min=float(finite.min()),
-        valid_mean=float(finite.mean()),
-        valid_max=float(finite.max()),
-        valid_fraction=float(finite.size / values.size),
-    )
+    return {
+        "rgba": (rgba * 255).astype("uint8"),
+        "bounds": [[float(bottom), float(left)], [float(top), float(right)]],
+        "vmin": vmin,
+        "vmax": vmax,
+        "valid_min": float(finite.min()),
+        "valid_mean": float(finite.mean()),
+        "valid_max": float(finite.max()),
+        "valid_fraction": float(finite.size / values.size),
+    }
+
+
+def sample_raster(
+    path: Path,
+    lat: float,
+    lon: float,
+    *,
+    mask_values: tuple[float, ...] = (),
+    scale: float = 1.0,
+) -> float | None:
+    """Value of ``path`` at a WGS84 point, read at full resolution.
+
+    Unlike :func:`raster_overlay` this does not decimate, so the returned value
+    is the one stored in the GeoTIFF. Returns ``None`` when the point falls
+    outside the raster, ``nan`` when the pixel is nodata or one of
+    ``mask_values`` (compared before scaling, as in the overlay), otherwise the
+    value multiplied by ``scale``.
+    """
+    import rasterio
+    from rasterio.warp import transform as warp_transform
+
+    with rasterio.open(path) as src:
+        xs, ys = warp_transform(
+            "EPSG:4326", src.crs or "EPSG:4326", [float(lon)], [float(lat)]
+        )
+        row, col = src.index(xs[0], ys[0])
+        if not (0 <= row < src.height and 0 <= col < src.width):
+            return None
+        window = rasterio.windows.Window(col, row, 1, 1)
+        # Cast before filling: the integer WD rasters cannot hold NaN.
+        pixel = src.read(1, window=window, masked=True).astype("float32")
+        value = float(pixel.filled(np.nan)[0, 0])
+
+    if value in mask_values:
+        return float("nan")
+    return value * scale
 
 
 def colorbar_figure(vmin: float, vmax: float, cmap: str, label: str):
