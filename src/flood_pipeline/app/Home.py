@@ -124,11 +124,16 @@ with middle:
 with right:
     st.subheader("Data status")
     dem_state = "✅" if cfg.dem_path().exists() else "—"
-    gfm_state = "✅" if cfg.gfm_mask_path().exists() else "—"
+    gfm_mask = cfg.gfm_mask_path(cfg.resolved_bands()[0][0])
+    gfm_state = "✅" if gfm_mask.exists() else "—"
+    scene_count = sum(
+        len(flexth_step.find_scene_outputs(cfg.scene_output_root(b)))
+        for b in cfg.gfm_output_bands()
+    )
     st.markdown(
         f"- DEM `{cfg.dem.out_name}`: {dem_state}\n"
-        f"- GFM `{cfg.gfm_mask_path().name}`: {gfm_state}\n"
-        f"- Water-depth scenes: {len(flexth_step.find_scene_outputs(cfg.output_dir))}"
+        f"- GFM `{gfm_mask.name}`: {gfm_state}\n"
+        f"- Water-depth scenes: {scene_count}"
     )
 
 st.divider()

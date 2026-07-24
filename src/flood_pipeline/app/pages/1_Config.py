@@ -114,6 +114,13 @@ with st.form("gfm_form"):
         min_value=0.0, step=0.5,
         help="smallest connected flood area kept as a polygon; 0 = keep every speck",
     )
+    compare_algorithms = st.checkbox(
+        "Compare algorithms (ensemble, dlr, tuw, list)",
+        value=gfm.get("compare_algorithms", False),
+        help="Run flood extent + water depth for all four GFM algorithms instead of "
+        "the single Band above (4× the FLEXTH runs); the Results page then shows a "
+        "band dropdown",
+    )
     if st.form_submit_button("Save gfm"):
         if len(dates) != 2:
             st.error("Pick both a start and an end date.")
@@ -123,6 +130,7 @@ with st.form("gfm_form"):
                 temporal_extent=[dates[0].isoformat(), dates[1].isoformat()],
                 resolution=float(resolution), max_items=int(max_items),
                 aggregation=aggregation, min_area_ha=float(min_area_ha),
+                compare_algorithms=compare_algorithms,
             )
             _saved("gfm")
 

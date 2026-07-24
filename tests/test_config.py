@@ -6,7 +6,9 @@ import pytest
 import yaml
 
 from flood_pipeline.config import (
+    GFM_ALGORITHM_BANDS,
     ConfigError,
+    band_key,
     load_config,
     save_config,
     to_dict,
@@ -36,6 +38,34 @@ def config_file(tmp_path: Path) -> Path:
     return path
 
 
+def test_band_key_strips_known_suffixes() -> None:
+    assert band_key("ensemble_flood_extent") == "ensemble"
+    assert band_key("dlr_flood_extent") == "dlr"
+    assert band_key("ensemble_water_extent") == "ensemble"
+    assert band_key("weird/name") == "weird_name"  # sanitized fallback
+
+
+def test_resolved_bands_single_by_default(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    assert cfg.gfm.compare_algorithms is False
+    assert cfg.resolved_bands() == [("ensemble", "ensemble_flood_extent")]
+
+
+def test_resolved_bands_all_algorithms_when_comparing(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    cfg.gfm.compare_algorithms = True
+    assert cfg.resolved_bands() == list(GFM_ALGORITHM_BANDS.items())
+    assert [k for k, _ in cfg.resolved_bands()] == ["ensemble", "dlr", "tuw", "list"]
+
+
+def test_compare_algorithms_round_trips(config_file: Path, tmp_path: Path) -> None:
+    cfg = load_config(config_file)
+    cfg.gfm.compare_algorithms = True
+    copy_path = tmp_path / "copy.yaml"
+    save_config(cfg, copy_path)
+    assert load_config(copy_path).gfm.compare_algorithms is True
+
+
 def test_load_fills_defaults(config_file: Path) -> None:
     cfg = load_config(config_file)
     assert cfg.project.name == "test_run"
@@ -53,7 +83,10 @@ def test_everything_resolves_inside_the_project_folder(config_file: Path) -> Non
     assert cfg.project_dir == project_dir
     assert cfg.data_dir == project_dir / "flood_data"
     assert cfg.dem_path() == project_dir / "flood_data" / "fabdem.tif"
-    assert cfg.gfm_mask_path().name == "gfm_flood_max.tif"
+    assert (
+        cfg.gfm_mask_path("ensemble")
+        == project_dir / "flood_data" / "ensemble" / "gfm_flood_max.tif"
+    )
     assert cfg.aoi_abs_path == project_dir / "aoi.geojson"
 
 
@@ -64,41 +97,57 @@ def test_absolute_paths_kept(config_file: Path, tmp_path: Path) -> None:
     assert cfg.data_dir == absolute
 
 
-def test_gfm_scene_path_and_paths(config_file: Path, tmp_path: Path) -> None:
+def test_gfm_band_and_scene_paths(config_file: Path) -> None:
     cfg = load_config(config_file)
-    assert cfg.gfm_mask_path().name == "gfm_flood_max.tif"
-    assert cfg.gfm_sum_path().name == "gfm_flood_sum.tif"
-    assert cfg.gfm_scene_path("2024-09-16_051230").name == "gfm_flood_2024-09-16_051230.tif"
+    stamp = "2024-09-16_051230"
+    band_dir = cfg.data_dir / "dlr"
+    assert cfg.gfm_band_dir("dlr") == band_dir
+    assert cfg.gfm_scene_dir("dlr", stamp) == band_dir / stamp
+    assert cfg.gfm_scene_path("dlr", stamp) == band_dir / stamp / "gfm_flood.tif"
+    assert cfg.gfm_exclusion_path("dlr", stamp) == band_dir / stamp / "gfm_exclusion.tif"
+    assert cfg.gfm_mask_path("dlr") == band_dir / "gfm_flood_max.tif"
+    assert cfg.gfm_sum_path("dlr") == band_dir / "gfm_flood_sum.tif"
+    assert cfg.gfm_reference_water_path("dlr") == band_dir / "gfm_flood_reference_water.tif"
 
-    cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    (cfg.data_dir / "gfm_flood_2024-09-18_052000.tif").write_bytes(b"")
-    (cfg.data_dir / "gfm_flood_2024-09-16_051230.tif").write_bytes(b"")
-    cfg.gfm_mask_path().write_bytes(b"")   # must be excluded
-    cfg.gfm_sum_path().write_bytes(b"")    # must be excluded
-    (cfg.data_dir / "unrelated.tif").write_bytes(b"")
 
-    names = [p.name for p in cfg.gfm_scene_paths()]
-    assert names == [
-        "gfm_flood_2024-09-16_051230.tif",
-        "gfm_flood_2024-09-18_052000.tif",
+def test_gfm_scene_stamps_discovers_scene_folders(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    band_dir = cfg.gfm_band_dir("ensemble")
+    (band_dir / "2024-09-18_052000").mkdir(parents=True)
+    (band_dir / "2024-09-16_051230").mkdir(parents=True)
+    (band_dir / "not_a_scene").mkdir(parents=True)  # ignored
+    (band_dir / "gfm_flood_max.tif").write_bytes(b"")  # a file, ignored
+    assert cfg.gfm_scene_stamps("ensemble") == [
+        "2024-09-16_051230",
+        "2024-09-18_052000",
     ]
+    assert cfg.gfm_scene_stamps("dlr") == []  # absent band dir -> empty
 
 
 def test_vector_path_swaps_the_raster_suffix(config_file: Path) -> None:
     cfg = load_config(config_file)
-    assert vector_path(cfg.gfm_mask_path()).name == "gfm_flood_max.gpkg"
+    assert vector_path(cfg.gfm_mask_path("ensemble")).name == "gfm_flood_max.gpkg"
     assert (
-        vector_path(cfg.gfm_scene_path("2024-09-16_051230")).name
-        == "gfm_flood_2024-09-16_051230.gpkg"
+        vector_path(cfg.gfm_scene_path("ensemble", "2024-09-16_051230")).name
+        == "gfm_flood.gpkg"
     )
-    assert vector_path(cfg.gfm_mask_path()).parent == cfg.data_dir
 
 
 def test_scene_dirs(config_file: Path) -> None:
     cfg = load_config(config_file)
     stamp = "2024-09-16_051230"
-    assert cfg.scene_work_dir(stamp) == cfg.work_dir / stamp
-    assert cfg.scene_output_dir(stamp) == cfg.output_dir / stamp
+    assert cfg.scene_work_root("tuw") == cfg.work_dir / "tuw"
+    assert cfg.scene_output_root("tuw") == cfg.output_dir / "tuw"
+    assert cfg.scene_work_dir("tuw", stamp) == cfg.work_dir / "tuw" / stamp
+    assert cfg.scene_output_dir("tuw", stamp) == cfg.output_dir / "tuw" / stamp
+
+
+def test_gfm_output_bands_lists_bands_with_scenes(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    (cfg.output_dir / "ensemble" / "2024-09-16_051230").mkdir(parents=True)
+    (cfg.output_dir / "dlr" / "2024-09-16_051230").mkdir(parents=True)
+    (cfg.output_dir / "empty_band").mkdir(parents=True)  # no scene subdir -> skip
+    assert cfg.gfm_output_bands() == ["dlr", "ensemble"]
 
 
 def test_round_trip_preserves_content(config_file: Path, tmp_path: Path) -> None:

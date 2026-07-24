@@ -32,8 +32,14 @@ uv run flood-pipeline dashboard
 | Step     | Source                                                | Output (defaults, inside the project folder)              |
 |----------|-------------------------------------------------------|-----------------------------------------------------------|
 | `dem`    | FABDEM mosaic via Google Earth Engine                 | `flood_data/fabdem.tif`                                    |
-| `gfm`    | GFM `ensemble_flood_extent` via EODC STAC (public)    | `flood_data/gfm_flood_<stamp>.tif` per scene + `..._max.tif` (+ optional `..._sum.tif`), each with a `.gpkg` of its connected flood areas |
-| `flexth` | FLEXTH `pipeline` (resample -> prepare-dtm -> run)    | `preprocessed/{flood,dtm}.tif`, `wl_wd_out/WD_*/WL_*.tif`  |
+| `gfm`    | GFM flood extent via EODC STAC (public); `gfm.compare_algorithms` runs all four algorithm bands (`ensemble`, `dlr`, `tuw`, `list`) instead of the single `gfm.band`; plus per-scene `exclusion_mask` and the static `reference_water_mask` per band | `flood_data/<band>/<stamp>/{gfm_flood.tif, gfm_flood.gpkg, gfm_exclusion.tif}` per scene; `<band>/gfm_flood_max.tif` (+ optional `_sum.tif`), `<band>/gfm_flood_reference_water.tif` |
+| `flexth` | FLEXTH `pipeline` (resample -> prepare-dtm -> run), once per scene | `preprocessed/dtm.tif` (prepared once, shared), `preprocessed/<band>/<stamp>/flood.tif`, `wl_wd_out/<band>/<stamp>/WD_*/WL_*.tif` |
+
+Set `gfm.compare_algorithms: true` to compute flood extent **and** water depth
+for all four GFM algorithms side by side (4× the FLEXTH runs — narrow
+`gfm.temporal_extent` to bound a comparison run); the Results page then shows a
+band dropdown. With it `false` (default) only `gfm.band` runs, in a single band
+folder.
 
 Each run is a **project folder** holding its own `config.yaml` and all data;
 every path in the config resolves relative to that folder:
@@ -59,6 +65,13 @@ current AOI* (set `dem.overwrite: true` to force a download; a cached DEM
 that doesn't cover the AOI is re-downloaded automatically). With `dem.delivery: drive` the DEM is exported
 to Google Drive instead and the pipeline halts with instructions; after placing
 the file in `flood_data/` a re-run continues with gfm/flexth.
+
+A re-run always leaves the **current** set of scenes on disk: the gfm step drops
+per-scene rasters it no longer produces (narrowed time window, redrawn AOI,
+scene empty over the AOI), and the flexth step then removes the `preprocessed/`
+and `wl_wd_out/` folders of those scenes. Without that the old WD/WL rasters
+would outlive their flood mask and keep showing up in the dashboard on a grid
+that no longer matches the AOI.
 
 FLEXTH's `WD_*.tif` is uint16 in **centimeters**, `WL_*.tif` float32 in meters;
 both use `999` as the permanent-water sentinel and `0` as nodata.
@@ -106,13 +119,13 @@ gfm:
 
 flexth:                       # passed through into work_dir/flexth_config.yaml;
   enabled: true               # io + merge sections are generated automatically
-  resample:                   # GFM mask -> metric master grid (work_dir/flood.tif)
+  resample:                   # GFM mask -> metric master grid (work_dir/<stamp>/flood.tif)
     enabled: true
     crs: EPSG:32633
     resolution: [30, 30]
     resample_alg: near
     compression: LZW
-  prepare_dtm:                # DEM -> flood.tif grid (work_dir/dtm.tif)
+  prepare_dtm:                # DEM -> flood.tif grid; runs once, cached as work_dir/dtm.tif
     enabled: true
     method: rasterio_gdal
     continuous_input: true

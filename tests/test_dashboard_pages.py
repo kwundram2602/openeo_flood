@@ -41,8 +41,12 @@ def test_page_renders_without_exception(page: Path, monkeypatch) -> None:
     assert not result.exception, f"{page.name} raised: {result.exception}"
 
 
+def _demo_bands():
+    return load_config(DEMO_CONFIG).gfm_output_bands()
+
+
 needs_outputs = pytest.mark.skipif(
-    not flexth_step.find_scene_outputs(load_config(DEMO_CONFIG).output_dir),
+    not _demo_bands(),
     reason="needs per-scene FLEXTH outputs (run the pipeline first)",
 )
 
@@ -59,9 +63,10 @@ def test_results_page_jumps_to_a_flood_area(monkeypatch) -> None:
     from flood_pipeline.config import vector_path
 
     cfg = load_config(DEMO_CONFIG)
-    scenes = flexth_step.find_scene_outputs(cfg.output_dir)
+    band = cfg.gfm_output_bands()[0]
+    scenes = flexth_step.find_scene_outputs(cfg.scene_output_root(band))
     first_stamp = next(iter(scenes))
-    if not vector_path(cfg.gfm_scene_path(first_stamp)).exists():
+    if not vector_path(cfg.gfm_scene_path(band, first_stamp)).exists():
         pytest.skip("needs GFM flood-area polygons (re-run the gfm step)")
 
     result = _run_page(APP_DIR / "pages" / "5_Results.py", monkeypatch)
@@ -82,9 +87,10 @@ def test_switching_scenes_keeps_the_map_where_the_user_left_it(monkeypatch) -> N
     from flood_pipeline.config import vector_path
 
     cfg = load_config(DEMO_CONFIG)
-    stamps = list(flexth_step.find_scene_outputs(cfg.output_dir))
+    band = cfg.gfm_output_bands()[0]
+    stamps = list(flexth_step.find_scene_outputs(cfg.scene_output_root(band)))
     if len(stamps) < 2 or not all(
-        vector_path(cfg.gfm_scene_path(s)).exists() for s in stamps
+        vector_path(cfg.gfm_scene_path(band, s)).exists() for s in stamps
     ):
         pytest.skip("needs two scenes with GFM flood-area polygons")
 
@@ -128,6 +134,23 @@ def test_results_page_renders_when_no_scenes(tmp_path: Path, monkeypatch) -> Non
     test.run()
     assert not test.exception
     assert any("run the" in str(msg.value).lower() for msg in test.info)
+
+
+def test_gfm_output_bands_from_disk(tmp_path: Path) -> None:
+    import shutil
+
+    from flood_pipeline.config import load_config as _load
+
+    project = tmp_path / "p"
+    project.mkdir()
+    (project / "config.yaml").write_text(
+        DEMO_CONFIG.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    shutil.copy(DEMO_CONFIG.parent / "aoi_drawn.geojson", project / "aoi_drawn.geojson")
+    cfg = _load(project / "config.yaml")
+    (cfg.output_dir / "ensemble" / "2024-09-16_051230").mkdir(parents=True)
+    (cfg.output_dir / "dlr" / "2024-09-16_051230").mkdir(parents=True)
+    assert cfg.gfm_output_bands() == ["dlr", "ensemble"]
 
 
 def test_flood_area_label_shows_rank_and_size() -> None:
