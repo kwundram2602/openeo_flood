@@ -19,7 +19,7 @@ gfm:
   enabled: true
   stac_url: https://stac.eodc.eu/api/v1
   collection: GFM
-  band: ensemble_flood_extent
+  band: ensemble_likelihood
   temporal_extent:
   - '2024-10-24'
   - '2024-11-01'
@@ -27,7 +27,8 @@ gfm:
   max_items: 0
   aggregation: max
   min_area_ha: 0.0
-  compare_algorithms: true
+  compare_algorithms: false
+  likelihood_threshold: 20
 flexth:
   enabled: true
   resample:
@@ -63,3 +64,4 @@ flexth:
       number_smoothings: 20
       kern_closing_size: 3
       closing_iterations: 2
+  fill_excluded: true

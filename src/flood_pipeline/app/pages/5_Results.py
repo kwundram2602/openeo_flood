@@ -84,6 +84,22 @@ show_exclusion = st.checkbox(
     "Overlay GFM exclusion mask (grey) — pixels GFM could not evaluate",
     value=False,
 )
+show_fill = st.checkbox(
+    "Show interpolation-added flood (orange) — pixels FLEXTH added beyond GFM",
+    value=False,
+)
+show_likelihood = st.checkbox(
+    "Overlay likelihood (viridis) — raw GFM probability, likelihood bands only",
+    value=False,
+)
+likelihood_range = st.slider(
+    "Likelihood color range [%]",
+    min_value=0,
+    max_value=100,
+    value=(10, 100),
+    disabled=not show_likelihood,
+    help="Narrow the range (e.g. 10–50) to bring out low probabilities.",
+)
 
 gfm_path = cfg.gfm_mask_path(band) if use_max else cfg.gfm_scene_path(band, stamp)
 areas = ui.flood_areas(vector_path(gfm_path))
@@ -231,8 +247,52 @@ if show_exclusion:
             "No GFM exclusion mask for this scene — re-run the GFM step to create it."
         )
 
-if areas is not None and not areas.empty:
-    ui.add_flood_area_layer(overlays, areas, selected_id=selected_area_id)
+if show_fill:
+    fill_path = cfg.scene_fill_path(band, stamp)
+    if fill_path.exists():
+        try:
+            # Solid orange: binary mask of what FLEXTH added beyond the GFM extent.
+            fill_overlay = ui.raster_overlay(
+                fill_path, mask_values=(0.0,), scale=1.0, solid_color="#ff7f00"
+            )
+        except ValueError:
+            st.caption(f"No interpolation-added pixels for scene {_label(stamp)}.")
+        else:
+            folium.raster_layers.ImageOverlay(
+                image=fill_overlay.rgba,
+                bounds=fill_overlay.bounds,
+                opacity=0.75,
+                name=f"interpolation-added {_label(stamp)}",
+            ).add_to(overlays)
+    else:
+        st.caption(
+            "No interpolation-added raster for this scene — re-run FLEXTH (needs a "
+            "WD output; enable flexth.fill_excluded for the urban fill)."
+        )
+
+if show_likelihood:
+    likelihood_path = cfg.gfm_likelihood_path(band, stamp)
+    if likelihood_path.exists():
+        try:
+            likelihood_overlay = ui.raster_overlay(
+                likelihood_path,
+                cmap="viridis",
+                vmin=float(likelihood_range[0]),
+                vmax=float(likelihood_range[1]),
+            )
+        except ValueError:
+            st.caption(f"No likelihood values for scene {_label(stamp)}.")
+        else:
+            folium.raster_layers.ImageOverlay(
+                image=likelihood_overlay.rgba,
+                bounds=likelihood_overlay.bounds,
+                opacity=0.75,
+                name=f"likelihood {_label(stamp)}",
+            ).add_to(overlays)
+    else:
+        st.caption(
+            f"Band `{band}` has no likelihood raster — select a *_likelihood band."
+        )
 
 if cfg.aoi_abs_path.exists():
     ui.add_aoi_layer(overlays, cfg.aoi_abs_path)
@@ -288,6 +348,13 @@ else:
     probe_col, coord_col = st.columns([1, 3])
     probe_col.metric(kind, reading)
     coord_col.caption(f"at {lat:.5f}, {lon:.5f} — {note}")
+    likelihood_path = cfg.gfm_likelihood_path(band, stamp)
+    if likelihood_path.exists():
+        lk = ui.sample_raster(likelihood_path, lat, lon)
+        if lk is None or math.isnan(lk):
+            coord_col.caption("likelihood: —")
+        else:
+            coord_col.caption(f"likelihood: {lk:.0f} %")
     if coord_col.button("Clear probe"):
         del st.session_state["results_probe"]
         st.rerun()

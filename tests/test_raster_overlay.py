@@ -93,6 +93,41 @@ def test_solid_color_overlays_are_untouched(depth_raster: Path) -> None:
     assert np.array_equal(overlay.rgba[..., :3][opaque][0], np.array([227, 26, 28]))
 
 
+def _likelihood_raster(tmp_path: Path) -> Path:
+    """A skewed 0-100 likelihood raster: mostly low, a few high."""
+    values = np.array(
+        [[5.0, 10.0, 20.0, 95.0], [5.0, 10.0, 20.0, 95.0]], dtype="float32"
+    )
+    path = tmp_path / "gfm_likelihood.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", height=2, width=4, count=1, dtype="float32",
+        crs="EPSG:4326", transform=from_origin(0.0, 2.0, 1.0, 1.0),
+    ) as dst:
+        dst.write(values, 1)
+    return path
+
+
+def test_vmin_vmax_override_sets_the_stretch(tmp_path: Path) -> None:
+    """Explicit bounds replace the percentile stretch."""
+    raster = _likelihood_raster(tmp_path)
+    overlay = ui.raster_overlay(raster, cmap="viridis", vmin=10.0, vmax=50.0)
+    assert overlay.vmin == 10.0
+    assert overlay.vmax == 50.0
+
+
+def test_narrow_range_brightens_low_values(tmp_path: Path) -> None:
+    """Lowering vmax spreads low likelihoods further up the colormap."""
+    raster = _likelihood_raster(tmp_path)
+    wide = ui.raster_overlay(raster, cmap="viridis", vmin=0.0, vmax=100.0)
+    narrow = ui.raster_overlay(raster, cmap="viridis", vmin=10.0, vmax=50.0)
+
+    # The 20% pixel (index 2) should map higher up viridis (greener/brighter,
+    # so a larger green channel) with the narrower range than the full one.
+    green_wide = int(wide.rgba[0, 2, 1])
+    green_narrow = int(narrow.rgba[0, 2, 1])
+    assert green_narrow > green_wide
+
+
 @pytest.fixture
 def reference_water_raster(tmp_path: Path) -> Path:
     """A GFM-style reference mask: 1 = permanent water, 0 = land."""

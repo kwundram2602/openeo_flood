@@ -21,7 +21,11 @@ import rioxarray
 import xarray as xr
 
 from flood_pipeline import polygonize
-from flood_pipeline.config import SCENE_STAMP_FORMAT, PipelineConfig
+from flood_pipeline.config import (
+    SCENE_STAMP_FORMAT,
+    PipelineConfig,
+    is_likelihood_band,
+)
 from flood_pipeline.steps import LogFn, StepOutcome
 
 GFM_NODATA = 255
@@ -108,6 +112,11 @@ def _cap_items(items, max_items: int, log: LogFn) -> list:
     return ordered[:max_items]
 
 
+def _binarize_likelihood(cube: xr.DataArray, threshold: int) -> xr.DataArray:
+    """Threshold a 0-100 likelihood cube into a 0/1 flood extent, keeping NaN."""
+    return (cube >= threshold).astype("float32").where(cube.notnull())
+
+
 def _has_flood(scene: xr.DataArray) -> bool:
     """True if the scene has any flood pixel (value > 0) over the AOI.
 
@@ -161,6 +170,11 @@ def _run_band(
 ) -> list[Path]:
     """Write one band's per-scene rasters and whole-time aggregates."""
     flood = load_flood_cube(items, bbox, band=band_name, resolution=cfg.gfm.resolution)
+    # Keep the raw likelihood so its scenes can be shown/probed; the extent used
+    # downstream is the thresholded version.
+    likelihood = flood if is_likelihood_band(band_name) else None
+    if likelihood is not None:
+        flood = _binarize_likelihood(flood, cfg.gfm.likelihood_threshold)
     # Same items/grid/time axis as the flood cube, so each flood scene has a
     # matching exclusion slice under the same acquisition timestamp.
     exclusion = load_flood_cube(
@@ -189,6 +203,14 @@ def _run_band(
         outputs.append(
             _write_geotiff(excl_scene, cfg.gfm_exclusion_path(key, stamp), log)
         )
+        if likelihood is not None:
+            outputs.append(
+                _write_geotiff(
+                    likelihood.sel(time=time_value, drop=True),
+                    cfg.gfm_likelihood_path(key, stamp),
+                    log,
+                )
+            )
 
     log(f"band {key}: wrote {scene_count} scene(s), skipped {skipped} empty")
     outputs.extend(

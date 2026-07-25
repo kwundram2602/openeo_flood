@@ -235,6 +235,8 @@ def raster_overlay(
     mask_values: tuple[float, ...] = (),
     scale: float = 1.0,
     solid_color: str | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ) -> RasterOverlay:
     """Load a raster as a colormapped RGBA overlay in EPSG:4326.
 
@@ -246,9 +248,14 @@ def raster_overlay(
     ``solid_color`` paints every valid pixel in that one color instead of
     colormapping the values — the right choice for a binary mask, whose single
     remaining value would otherwise land at the washed-out low end of ``cmap``.
+
+    ``vmin``/``vmax`` fix the color-stretch bounds (in scaled units); pass both
+    to override the default 2nd-98th-percentile stretch — e.g. a narrow range to
+    bring out the low end of a skewed likelihood layer.
     """
     fields = _build_overlay(
-        str(path), path.stat().st_mtime, cmap, max_dim, mask_values, scale, solid_color
+        str(path), path.stat().st_mtime, cmap, max_dim, mask_values, scale,
+        solid_color, vmin, vmax,
     )
     return RasterOverlay(**fields)
 
@@ -262,6 +269,8 @@ def _build_overlay(
     mask_values: tuple[float, ...],
     scale: float,
     solid_color: str | None = None,
+    vmin_override: float | None = None,
+    vmax_override: float | None = None,
 ) -> dict:
     """Compute the overlay fields as a plain dict.
 
@@ -291,8 +300,11 @@ def _build_overlay(
     finite = values[finite_mask]
     if finite.size == 0:
         raise ValueError(f"no valid pixels to display in {path_str}")
-    vmin = float(np.percentile(finite, 2))
-    vmax = float(np.percentile(finite, 98))
+    if vmin_override is not None and vmax_override is not None:
+        vmin, vmax = float(vmin_override), float(vmax_override)
+    else:
+        vmin = float(np.percentile(finite, 2))
+        vmax = float(np.percentile(finite, 98))
     if vmax <= vmin:
         vmax = vmin + 1e-6
 

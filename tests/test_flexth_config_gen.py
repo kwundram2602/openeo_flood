@@ -327,3 +327,71 @@ def test_stamp_output_inserts_stamp_after_token(tmp_path: Path) -> None:
     assert renamed.name == "WD_2024-09-16_051230_method_A_params.tif"
     assert renamed.exists()
     assert not original.exists()
+
+
+def test_fill_excluded_dropped_from_flexth_config(cfg, scene) -> None:
+    cfg.flexth["fill_excluded"] = True
+    generated = flexth_step.build_flexth_config(cfg, **scene)
+    assert "fill_excluded" not in generated
+
+
+def test_masks_fed_to_flexth_when_flag_on(project, fake_flexth, monkeypatch) -> None:
+    project.flexth["fill_excluded"] = True
+    for stamp in STAMPS:
+        project.gfm_exclusion_path("ensemble", stamp).write_bytes(b"excl")
+    project.gfm_reference_water_path("ensemble").parent.mkdir(parents=True, exist_ok=True)
+    project.gfm_reference_water_path("ensemble").write_bytes(b"ref")
+
+    warped: list[tuple[str, str]] = []
+
+    def fake_warp(cfg, input_raster, output_raster):
+        Path(output_raster).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_raster).write_bytes(b"warped")
+        warped.append((Path(input_raster).name, Path(output_raster).name))
+
+    monkeypatch.setattr(flexth_step, "_warp_to_grid", fake_warp)
+    flexth_step.run(project, log=lambda _line: None)
+
+    outputs = {name for _src, name in warped}
+    assert "exclusion.tif" in outputs
+    assert "permanent_water.tif" in outputs
+    for stamp in STAMPS:
+        assert (project.scene_work_dir("ensemble", stamp) / "exclusion.tif").exists()
+
+
+def _tiny_raster(path: Path, values) -> None:
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    arr = np.array(values, dtype="uint16")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        path, "w", driver="GTiff", height=arr.shape[0], width=arr.shape[1],
+        count=1, dtype="uint16", crs="EPSG:32633",
+        transform=from_origin(500_000.0, 5_000_000.0, 30.0, 30.0),
+    ) as dst:
+        dst.write(arr, 1)
+
+
+def test_write_fill_raster_marks_added_pixels(cfg) -> None:
+    import rasterio
+
+    stamp = SCENE_STAMP
+    work = cfg.scene_work_dir(BAND, stamp)
+    _tiny_raster(work / "flood.tif", [[1, 0], [0, 0]])  # raw GFM: one flooded cell
+    wd = cfg.scene_output_dir(BAND, stamp) / "WD_x.tif"
+    _tiny_raster(wd, [[1, 5], [0, 999]])  # FLEXTH wet: (0,0),(0,1); 999=perm water
+
+    out = flexth_step._write_fill_raster(cfg, BAND, stamp, wd, log=lambda _l: None)
+    assert out == cfg.scene_fill_path(BAND, stamp)
+    with rasterio.open(out) as src:
+        added = src.read(1)
+    assert added.tolist() == [[0, 1], [0, 0]]
+
+
+def test_write_fill_raster_skips_without_flood(cfg) -> None:
+    stamp = SCENE_STAMP
+    wd = cfg.scene_output_dir(BAND, stamp) / "WD_x.tif"
+    _tiny_raster(wd, [[1, 0]])  # no flood.tif in the work dir
+    assert flexth_step._write_fill_raster(cfg, BAND, stamp, wd, log=lambda _l: None) is None

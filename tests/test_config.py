@@ -142,6 +142,68 @@ def test_scene_dirs(config_file: Path) -> None:
     assert cfg.scene_output_dir("tuw", stamp) == cfg.output_dir / "tuw" / stamp
 
 
+def test_is_likelihood_band() -> None:
+    from flood_pipeline.config import GFM_SELECTABLE_BANDS, is_likelihood_band
+    assert is_likelihood_band("ensemble_likelihood") is True
+    assert is_likelihood_band("ensemble_flood_extent") is False
+    assert "ensemble_likelihood" in GFM_SELECTABLE_BANDS
+    assert "ensemble_flood_extent" in GFM_SELECTABLE_BANDS
+
+
+def test_likelihood_threshold_default_and_round_trip(config_file: Path, tmp_path: Path) -> None:
+    cfg = load_config(config_file)
+    assert cfg.gfm.likelihood_threshold == 25
+    cfg.gfm.band = "ensemble_likelihood"
+    cfg.gfm.likelihood_threshold = 40
+    copy_path = tmp_path / "copy.yaml"
+    save_config(cfg, copy_path)
+    reloaded = load_config(copy_path)
+    assert reloaded.gfm.band == "ensemble_likelihood"
+    assert reloaded.gfm.likelihood_threshold == 40
+
+
+def test_resolved_bands_for_likelihood(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    cfg.gfm.band = "ensemble_likelihood"
+    assert cfg.resolved_bands() == [("ensemble_likelihood", "ensemble_likelihood")]
+
+
+def test_validate_likelihood_threshold_range(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    cfg.gfm.band = "ensemble_likelihood"
+    cfg.gfm.likelihood_threshold = 0
+    assert any("likelihood_threshold" in e for e in validate(cfg))
+    cfg.gfm.likelihood_threshold = 25
+    assert not any("likelihood_threshold" in e for e in validate(cfg))
+    cfg.gfm.band = "ensemble_flood_extent"  # range unchecked for a binary band
+    cfg.gfm.likelihood_threshold = 0
+    assert not any("likelihood_threshold" in e for e in validate(cfg))
+
+
+def test_gfm_likelihood_path(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    stamp = "2024-09-16_051230"
+    assert (
+        cfg.gfm_likelihood_path("ensemble_likelihood", stamp)
+        == cfg.data_dir / "ensemble_likelihood" / stamp / "gfm_likelihood.tif"
+    )
+
+
+def test_scene_fill_path(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    stamp = "2024-09-16_051230"
+    assert (
+        cfg.scene_fill_path("dlr", stamp)
+        == cfg.output_dir / "dlr" / stamp / "interpolated_fill.tif"
+    )
+
+
+def test_validate_accepts_fill_excluded(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    cfg.flexth["fill_excluded"] = True
+    assert validate(cfg) == []
+
+
 def test_gfm_output_bands_lists_bands_with_scenes(config_file: Path) -> None:
     cfg = load_config(config_file)
     (cfg.output_dir / "ensemble" / "2024-09-16_051230").mkdir(parents=True)

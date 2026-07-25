@@ -19,8 +19,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+import rasterio
 import yaml
-from flexth.config import DTM_FILENAME
+from flexth import resample as flexth_resample
+from flexth.config import DTM_FILENAME, ResampleConfig
 
 from flood_pipeline.config import SCENE_DIR_RE, PipelineConfig
 from flood_pipeline.steps import LogFn, StepOutcome
@@ -61,7 +64,7 @@ def build_flexth_config(
     passthrough = {
         key: copy.deepcopy(value)
         for key, value in cfg.flexth.items()
-        if key != "enabled"
+        if key not in ("enabled", "fill_excluded")
     }
     prepare_section = passthrough.get("prepare_dtm") or {}
     prepare_section["enabled"] = prepare_dtm and prepare_section.get("enabled", True)
@@ -171,6 +174,76 @@ def _link_or_copy(source: Path, target: Path) -> None:
         shutil.copy2(source, target)
 
 
+def _warp_to_grid(cfg: PipelineConfig, input_raster: Path, output_raster: Path) -> None:
+    """Warp a categorical GFM raster onto the FLEXTH master grid.
+
+    Reuses FLEXTH's own resample with the flood grid's CRS/resolution and
+    nearest resampling (the masks are binary), so the result aligns with the
+    flood.tif the pipeline produces from the same-grid GFM rasters.
+    """
+    resample = cfg.flexth.get("resample", {})
+    flexth_resample.run(
+        ResampleConfig(
+            input_raster=input_raster,
+            output_raster=output_raster,
+            crs=resample.get("crs", "EPSG:32633"),
+            resolution=list(resample.get("resolution", [30, 30])),
+            resample_alg="near",
+            compression=resample.get("compression", "LZW"),
+        )
+    )
+
+
+def _feed_masks(
+    cfg: PipelineConfig, band: str, stamp: str, work_dir: Path, log: LogFn
+) -> None:
+    """Write exclusion.tif and permanent_water.tif into a scene work dir.
+
+    FLEXTH reads these to expand the interpolated water surface into the urban
+    (excluded) and permanent-water zones. Missing sources are skipped, not fatal.
+    """
+    sources = {
+        "exclusion.tif": cfg.gfm_exclusion_path(band, stamp),
+        "permanent_water.tif": cfg.gfm_reference_water_path(band),
+    }
+    for name, source in sources.items():
+        if not source.exists():
+            log(f"##[scene:{band}/{stamp}] fill: {source.name} absent, skipping")
+            continue
+        _warp_to_grid(cfg, source, work_dir / name)
+        log(f"##[scene:{band}/{stamp}] fill: wrote {name}")
+
+
+def _write_fill_raster(
+    cfg: PipelineConfig, band: str, stamp: str, wd_path: Path, log: LogFn
+) -> Path | None:
+    """Write a mask of pixels FLEXTH flooded beyond the raw GFM extent.
+
+    ``added = wet & (raw GFM extent != flood)`` on the shared FLEXTH grid, where
+    ``wet`` excludes nodata (0) and the permanent-water sentinel (999). Returns
+    ``None`` (no-op) when the WD raster or the resampled flood.tif is absent.
+    """
+    flood_path = cfg.scene_work_dir(band, stamp) / "flood.tif"
+    if not wd_path.exists() or not flood_path.exists():
+        return None
+    try:
+        with rasterio.open(wd_path) as wd_src:
+            wd = wd_src.read(1)
+            profile = wd_src.profile
+        with rasterio.open(flood_path) as flood_src:
+            flood = flood_src.read(1)
+    except rasterio.RasterioIOError:
+        return None
+    wet = (wd != 0) & (wd != 999)
+    added = (wet & (flood != 1)).astype("uint8")
+    out_path = cfg.scene_fill_path(band, stamp)
+    profile.update(dtype="uint8", count=1, nodata=0)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(added, 1)
+    log(f"##[scene:{band}/{stamp}] wrote {out_path.name}")
+    return out_path
+
+
 def _run_flexth(config_path: Path, log: LogFn) -> None:
     """Run ``flexth pipeline <config>`` as a subprocess, streaming its output."""
     command = [sys.executable, "-m", "flexth.cli", "pipeline", str(config_path)]
@@ -235,6 +308,8 @@ def _run_scene(
     output_dir = cfg.scene_output_dir(band, stamp)
     output_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
+    if cfg.flexth.get("fill_excluded"):
+        _feed_masks(cfg, band, stamp, work_dir, log)
     existing = set(find_outputs(output_dir))
 
     scene_dtm = work_dir / DTM_FILENAME
@@ -272,4 +347,10 @@ def _run_scene(
         renamed = _stamp_output(raster, stamp)
         stamped.append(renamed)
         log(f"##[scene:{band}/{stamp}] output: {renamed}")
+
+    wd = next((p for p in stamped if p.name.startswith("WD")), None)
+    if wd is not None:
+        fill = _write_fill_raster(cfg, band, stamp, wd, log)
+        if fill is not None:
+            stamped.append(fill)
     return stamped

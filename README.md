@@ -41,6 +41,21 @@ for all four GFM algorithms side by side (4× the FLEXTH runs — narrow
 band dropdown. With it `false` (default) only `gfm.band` runs, in a single band
 folder.
 
+The band may be a `*_likelihood` band (currently `ensemble_likelihood`): the gfm
+step thresholds it at `gfm.likelihood_threshold` (percent, default 25) into a
+flood extent. The likelihood keeps signal in urban areas the binary
+`ensemble_flood_extent` drops, giving extra seed pixels for the FLEXTH urban fill.
+For a `*_likelihood` band each scene also keeps the raw
+`flood_data/<band>/<stamp>/gfm_likelihood.tif` (0–100 %), which the Results page
+can overlay (viridis) and the click-probe reads.
+
+Set `flexth.fill_excluded: true` to feed FLEXTH the GFM exclusion and
+permanent-water masks so it reconstructs flood in the urban areas GFM cannot
+observe; each scene then also gets
+`wl_wd_out/<band>/<stamp>/interpolated_fill.tif` (pixels FLEXTH added beyond the
+raw GFM extent), which the Results page can overlay in orange. Quality is bounded
+by the 30 m FABDEM — the fill is indicative, not street-level.
+
 Each run is a **project folder** holding its own `config.yaml` and all data;
 every path in the config resolves relative to that folder:
 

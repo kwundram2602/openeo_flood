@@ -123,6 +123,67 @@ def test_run_removes_legacy_flat_layout(cfg, monkeypatch) -> None:
     assert not legacy.exists() and not legacy_poly.exists() and not legacy_excl.exists()
 
 
+def test_binarize_likelihood_thresholds_and_keeps_nodata() -> None:
+    grid = xr.DataArray(
+        np.array([[0.0, 25.0], [80.0, np.nan]], dtype="float32"),
+        dims=("y", "x"),
+    )
+    out = gfm._binarize_likelihood(grid, 25)
+    assert out.values[0, 0] == 0.0   # below threshold
+    assert out.values[0, 1] == 1.0   # == threshold -> flooded
+    assert out.values[1, 0] == 1.0
+    assert bool(np.isnan(out.values[1, 1]))  # nodata preserved
+
+
+def test_run_thresholds_likelihood_band(cfg, monkeypatch) -> None:
+    times = pd.to_datetime(["2024-09-16T05:12:30"])
+    values = np.array([[[0.0, 25.0, 80.0]]], dtype="float32")  # 1 time, 1x3
+    cube = xr.DataArray(
+        values, dims=("time", "y", "x"),
+        coords={"time": times, "y": [0.0], "x": [0.0, 1.0, 2.0]},
+    ).rio.write_crs("EPSG:4326")
+
+    monkeypatch.setattr(gfm, "aoi_bbox_4326", lambda _p: (0.0, 0.0, 1.0, 1.0))
+    monkeypatch.setattr(gfm, "search_gfm_items", lambda *a, **k: [object()])
+    monkeypatch.setattr(gfm, "load_flood_cube", lambda *a, **k: cube)
+    cfg.gfm.band = "ensemble_likelihood"
+    cfg.gfm.likelihood_threshold = 25
+
+    gfm.run(cfg, log=lambda _line: None)
+
+    scene = cfg.gfm_scene_path("ensemble_likelihood", "2024-09-16_051230")
+    assert scene.exists()
+    vals = set(np.unique(rioxarray.open_rasterio(scene).values).tolist())
+    assert vals <= {0.0, 1.0}  # thresholded to a binary extent
+
+
+def test_run_writes_raw_likelihood_for_likelihood_band(cfg, monkeypatch) -> None:
+    times = pd.to_datetime(["2024-09-16T05:12:30"])
+    values = np.array([[[0.0, 25.0, 80.0]]], dtype="float32")
+    cube = xr.DataArray(
+        values, dims=("time", "y", "x"),
+        coords={"time": times, "y": [0.0], "x": [0.0, 1.0, 2.0]},
+    ).rio.write_crs("EPSG:4326")
+    monkeypatch.setattr(gfm, "aoi_bbox_4326", lambda _p: (0.0, 0.0, 1.0, 1.0))
+    monkeypatch.setattr(gfm, "search_gfm_items", lambda *a, **k: [object()])
+    monkeypatch.setattr(gfm, "load_flood_cube", lambda *a, **k: cube)
+    cfg.gfm.band = "ensemble_likelihood"
+    cfg.gfm.likelihood_threshold = 25
+
+    gfm.run(cfg, log=lambda _line: None)
+
+    lk = cfg.gfm_likelihood_path("ensemble_likelihood", "2024-09-16_051230")
+    assert lk.exists()
+    vals = set(np.unique(rioxarray.open_rasterio(lk).values).tolist())
+    assert 80.0 in vals and 25.0 in vals  # raw, not binarized
+
+
+def test_run_writes_no_likelihood_for_binary_band(cfg, monkeypatch) -> None:
+    _patch(monkeypatch)  # fake 0/1 cube, default ensemble_flood_extent band
+    gfm.run(cfg, log=lambda _line: None)
+    assert not cfg.gfm_likelihood_path("ensemble", FLOODED).exists()
+
+
 def test_has_flood_predicate() -> None:
     grid = xr.DataArray(np.array([[0.0, 1.0], [np.nan, 0.0]], dtype="float32"))
     assert gfm._has_flood(grid) is True
