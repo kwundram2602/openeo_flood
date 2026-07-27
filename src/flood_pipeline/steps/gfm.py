@@ -9,21 +9,32 @@ reference/overlay) and the temporal sum is optional (``gfm.aggregation: sum`` or
 from __future__ import annotations
 
 import datetime as dt
+import shutil
 from pathlib import Path
 
 import geopandas as gpd
 import odc.stac # used to create a (time, y, x) cube from the GFM STAC items
 import pandas as pd
-import pystac
+import pystac # just using for return type hint; no STAC operations here
 import pystac_client # open stac catalog and search for items
 import rioxarray
 import xarray as xr
 
 from flood_pipeline import polygonize
-from flood_pipeline.config import SCENE_STAMP_FORMAT, PipelineConfig, vector_path
+from flood_pipeline.config import (
+    SCENE_STAMP_FORMAT,
+    PipelineConfig,
+    is_likelihood_band,
+)
 from flood_pipeline.steps import LogFn, StepOutcome
 
 GFM_NODATA = 255
+# Static per-AOI permanent-water reference band; downloaded once (max over time).
+GFM_REFERENCE_WATER_BAND = "reference_water_mask"
+# Per-acquisition mask of pixels GFM could not evaluate (urban layover/shadow,
+# dense vegetation). Depends on the pass geometry, so it is written per scene —
+# unlike the reference water, a whole-time max would blur pass-specific gaps.
+GFM_EXCLUSION_BAND = "exclusion_mask"
 
 
 def aoi_bbox_4326(aoi_path: Path) -> tuple[float, float, float, float]:
@@ -101,6 +112,11 @@ def _cap_items(items, max_items: int, log: LogFn) -> list:
     return ordered[:max_items]
 
 
+def _binarize_likelihood(cube: xr.DataArray, threshold: int) -> xr.DataArray:
+    """Threshold a 0-100 likelihood cube into a 0/1 flood extent, keeping NaN."""
+    return (cube >= threshold).astype("float32").where(cube.notnull())
+
+
 def _has_flood(scene: xr.DataArray) -> bool:
     """True if the scene has any flood pixel (value > 0) over the AOI.
 
@@ -111,7 +127,12 @@ def _has_flood(scene: xr.DataArray) -> bool:
 
 
 def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
-    """Fetch the GFM flood extent and write one raster per flooded scene + max."""
+    """Fetch GFM flood extent + water depth inputs for each resolved band.
+
+    Writes one folder per flooded acquisition under flood_data/<band>/<stamp>/
+    (flood mask + polygons + exclusion mask) plus per-band whole-time
+    aggregates. Single-band and compare-all-algorithms share this one loop.
+    """
     bbox = aoi_bbox_4326(cfg.aoi_abs_path)
     log(
         f"searching {cfg.gfm.collection} at {cfg.gfm.stac_url} for bbox "
@@ -129,18 +150,38 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
             f"{cfg.gfm.temporal_extent}; widen gfm.temporal_extent or check the AOI"
         )
     items = _cap_items(items, cfg.gfm.max_items, log)
-    log(f"loading {len(items)} items as a cube at {cfg.gfm.resolution} deg ...")
-
-    flood = load_flood_cube(
-        items, bbox, band=cfg.gfm.band, resolution=cfg.gfm.resolution
-    )
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    # Clear per-scene rasters (and their polygons) from a previous run so the
-    # on-disk set matches this run — skipped/empty scenes must not linger and
-    # re-feed FLEXTH.
-    for stale in cfg.gfm_scene_paths():
-        stale.unlink()
-        vector_path(stale).unlink(missing_ok=True)
+    _remove_legacy_flat_layout(cfg, log)
+
+    outputs: list[Path] = []
+    for key, band_name in cfg.resolved_bands():
+        log(f"== band {key} ({band_name}): loading {len(items)} items ...")
+        outputs.extend(_run_band(cfg, items, bbox, key, band_name, log))
+    return StepOutcome(outputs=outputs)
+
+
+def _run_band(
+    cfg: PipelineConfig,
+    items: pystac.ItemCollection,
+    bbox: tuple[float, float, float, float],
+    key: str,
+    band_name: str,
+    log: LogFn,
+) -> list[Path]:
+    """Write one band's per-scene rasters and whole-time aggregates."""
+    flood = load_flood_cube(items, bbox, band=band_name, resolution=cfg.gfm.resolution)
+    # Keep the raw likelihood so its scenes can be shown/probed; the extent used
+    # downstream is the thresholded version.
+    likelihood = flood if is_likelihood_band(band_name) else None
+    if likelihood is not None:
+        flood = _binarize_likelihood(flood, cfg.gfm.likelihood_threshold)
+    # Same items/grid/time axis as the flood cube, so each flood scene has a
+    # matching exclusion slice under the same acquisition timestamp.
+    exclusion = load_flood_cube(
+        items, bbox, band=GFM_EXCLUSION_BAND, resolution=cfg.gfm.resolution
+    )
+    cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
+    _clear_band_scene_dirs(cfg, key)
 
     outputs: list[Path] = []
     scene_count = 0
@@ -149,20 +190,69 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
         stamp = pd.Timestamp(time_value).strftime(SCENE_STAMP_FORMAT)
         scene = flood.sel(time=time_value, drop=True)
         if not _has_flood(scene):
-            log(f"skipped {stamp}: no flood pixels over the AOI")
+            log(f"skipped {key}/{stamp}: no flood pixels over the AOI")
             skipped += 1
             continue
         scene_count += 1
-        outputs.extend(_write_scene(cfg, scene, cfg.gfm_scene_path(stamp), stamp, log))
+        cfg.gfm_scene_dir(key, stamp).mkdir(parents=True, exist_ok=True)
+        outputs.extend(
+            _write_scene(cfg, scene, cfg.gfm_scene_path(key, stamp), stamp, log)
+        )
+        # Overlay only (no flood polygons): the exclusion mask of this same pass.
+        excl_scene = exclusion.sel(time=time_value, drop=True)
+        outputs.append(
+            _write_geotiff(excl_scene, cfg.gfm_exclusion_path(key, stamp), log)
+        )
+        if likelihood is not None:
+            outputs.append(
+                _write_geotiff(
+                    likelihood.sel(time=time_value, drop=True),
+                    cfg.gfm_likelihood_path(key, stamp),
+                    log,
+                )
+            )
 
-    log(f"wrote {scene_count} flooded scene(s), skipped {skipped} empty scene(s)")
+    log(f"band {key}: wrote {scene_count} scene(s), skipped {skipped} empty")
     outputs.extend(
-        _write_scene(cfg, flood.max(dim="time"), cfg.gfm_mask_path(), "max", log)
+        _write_scene(cfg, flood.max(dim="time"), cfg.gfm_mask_path(key), "max", log)
     )
     if cfg.gfm.aggregation in ("sum", "both"):
         # No polygons here: sum > 0 covers exactly the same pixels as max > 0.
-        outputs.append(_write_geotiff(flood.sum(dim="time"), cfg.gfm_sum_path(), log))
-    return StepOutcome(outputs=outputs)
+        outputs.append(
+            _write_geotiff(flood.sum(dim="time"), cfg.gfm_sum_path(key), log)
+        )
+    # Static per AOI, so the whole-time max over the same items covers the full
+    # AOI in a single raster (reference/overlay layer, not a FLEXTH input).
+    reference = load_flood_cube(
+        items, bbox, band=GFM_REFERENCE_WATER_BAND, resolution=cfg.gfm.resolution
+    )
+    outputs.append(
+        _write_geotiff(
+            reference.max(dim="time"), cfg.gfm_reference_water_path(key), log
+        )
+    )
+    return outputs
+
+
+def _clear_band_scene_dirs(cfg: PipelineConfig, band: str) -> None:
+    """Drop a band's per-scene folders from a previous run before rewriting.
+
+    Skipped/empty scenes must not linger and re-feed FLEXTH; the exclusion mask
+    and flood polygons live inside the folder, so they go with it.
+    """
+    for stamp in cfg.gfm_scene_stamps(band):
+        shutil.rmtree(cfg.gfm_scene_dir(band, stamp))
+
+
+def _remove_legacy_flat_layout(cfg: PipelineConfig, log: LogFn) -> None:
+    """Remove pre-band flat-layout GFM files left directly in data_dir."""
+    if not cfg.data_dir.exists():
+        return
+    for pattern in ("gfm_flood_*.tif", "gfm_flood_*.gpkg", "gfm_exclusion_*.tif"):
+        for stale in cfg.data_dir.glob(pattern):
+            if stale.is_file():
+                stale.unlink()
+                log(f"removed legacy flat-layout file: {stale.name}")
 
 
 def _write_scene(

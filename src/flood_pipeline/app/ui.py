@@ -7,6 +7,7 @@ goes through :func:`pipeline_cfg`, which reads the file as saved on disk.
 
 from __future__ import annotations
 
+import functools
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,23 @@ from flood_pipeline.config import FLOOD_AREA_LAYER, PipelineConfig, load_config
 DEFAULT_CONFIG_NAME = "config.yaml"
 PROJECTS_DIR_NAME = "projects"
 OVERLAY_OPACITY = 0.85
+CMAP_FLOOR = 0.25  # where the lowest displayed value lands in the colormap
+
+
+@functools.lru_cache(maxsize=None)
+def display_colormap(cmap: str) -> matplotlib.colors.Colormap:
+    """``cmap`` without its washed-out low end, for both overlay and legend.
+
+    Sequential maps start at near-white ("Blues" at RGB 247, 251, 255), which
+    is invisible over the basemap. That end is where the percentile stretch
+    puts a lot of pixels: FLEXTH floors water depth at its minimum, so a large
+    share of a WD raster carries exactly that one value and ``vmin`` lands on
+    it. Starting a quarter into the ramp keeps the shallowest water readable.
+    """
+    base = matplotlib.colormaps[cmap]
+    return matplotlib.colors.LinearSegmentedColormap.from_list(
+        f"{cmap}_from_{CMAP_FLOOR}", base(np.linspace(CMAP_FLOOR, 1.0, 256))
+    )
 
 
 def discover_project_configs() -> list[Path]:
@@ -181,6 +199,20 @@ def add_flood_area_layer(
         ).add_to(parent)
 
 
+def format_share(fraction: float) -> str:
+    """A fraction as a percentage that never rounds a non-zero share to "0.0%".
+
+    Shares this small are the interesting case: a pre-flood acquisition can hold
+    a few dozen flooded pixels in a raster of millions, and ``0.0%`` would
+    report that as an empty scene. Below 0.1% the share therefore switches to
+    two significant digits instead of one decimal place.
+    """
+    percent = fraction * 100.0
+    if percent == 0.0:
+        return "0%"
+    return f"{percent:.1f}%" if percent >= 0.1 else f"{percent:.2g}%"
+
+
 @dataclass
 class RasterOverlay:
     """A display-ready raster: RGBA image, folium bounds and value stats."""
@@ -203,6 +235,8 @@ def raster_overlay(
     mask_values: tuple[float, ...] = (),
     scale: float = 1.0,
     solid_color: str | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ) -> RasterOverlay:
     """Load a raster as a colormapped RGBA overlay in EPSG:4326.
 
@@ -214,9 +248,14 @@ def raster_overlay(
     ``solid_color`` paints every valid pixel in that one color instead of
     colormapping the values — the right choice for a binary mask, whose single
     remaining value would otherwise land at the washed-out low end of ``cmap``.
+
+    ``vmin``/``vmax`` fix the color-stretch bounds (in scaled units); pass both
+    to override the default 2nd-98th-percentile stretch — e.g. a narrow range to
+    bring out the low end of a skewed likelihood layer.
     """
     fields = _build_overlay(
-        str(path), path.stat().st_mtime, cmap, max_dim, mask_values, scale, solid_color
+        str(path), path.stat().st_mtime, cmap, max_dim, mask_values, scale,
+        solid_color, vmin, vmax,
     )
     return RasterOverlay(**fields)
 
@@ -230,6 +269,8 @@ def _build_overlay(
     mask_values: tuple[float, ...],
     scale: float,
     solid_color: str | None = None,
+    vmin_override: float | None = None,
+    vmax_override: float | None = None,
 ) -> dict:
     """Compute the overlay fields as a plain dict.
 
@@ -259,8 +300,11 @@ def _build_overlay(
     finite = values[finite_mask]
     if finite.size == 0:
         raise ValueError(f"no valid pixels to display in {path_str}")
-    vmin = float(np.percentile(finite, 2))
-    vmax = float(np.percentile(finite, 98))
+    if vmin_override is not None and vmax_override is not None:
+        vmin, vmax = float(vmin_override), float(vmax_override)
+    else:
+        vmin = float(np.percentile(finite, 2))
+        vmax = float(np.percentile(finite, 98))
     if vmax <= vmin:
         vmax = vmin + 1e-6
 
@@ -268,7 +312,7 @@ def _build_overlay(
         rgba = np.tile(matplotlib.colors.to_rgba(solid_color), values.shape + (1,))
     else:
         normalized = np.clip((values - vmin) / (vmax - vmin), 0.0, 1.0)
-        rgba = matplotlib.colormaps[cmap](np.nan_to_num(normalized, nan=0.0))
+        rgba = display_colormap(cmap)(np.nan_to_num(normalized, nan=0.0))
     rgba[..., 3] = np.where(finite_mask, OVERLAY_OPACITY, 0.0)
 
     left, bottom, right, top = data.rio.bounds()
@@ -328,7 +372,7 @@ def colorbar_figure(vmin: float, vmax: float, cmap: str, label: str):
     ax = fig.add_axes((0.05, 0.55, 0.9, 0.3))  # leave room for the label below
     mappable = matplotlib.cm.ScalarMappable(
         norm=matplotlib.colors.Normalize(vmin=vmin, vmax=vmax),
-        cmap=cmap,
+        cmap=display_colormap(cmap),  # same ramp as the overlay, or it lies
     )
     fig.colorbar(mappable, cax=ax, orientation="horizontal")
     ax.set_xlabel(label)
