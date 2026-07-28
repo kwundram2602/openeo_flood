@@ -131,8 +131,23 @@ class GfmConfig:
     max_items: int = 0  # optional safety cap on scenes loaded; 0 = fetch all
     aggregation: str = "max"  # "max" | "sum" | "both"; max is always written
     min_area_ha: float = 1.0  # smallest connected flood area kept; 0 = no filter
+    out_name: str = GFM_MAX_NAME  # legacy key; the max output name is fixed
     compare_algorithms: bool = False  # run all four algorithm bands, not just `band`
     likelihood_threshold: int = 25  # percent; only used for a *_likelihood band
+
+@dataclass
+class PopulationConfig:
+    """WorldPop exposure-layer retrieval via Google Earth Engine."""
+
+    enabled: bool = True
+    collection: str = "WorldPop/GP/100m/pop_age_sex_cons_unadj"
+    year: int = 2020
+    band: str = "population"
+    scale: int = 100
+    crs: str = "EPSG:4326"
+    out_name: str = "worldpop_2020.tif"
+    overwrite: bool = False
+
 
 
 @dataclass
@@ -143,6 +158,7 @@ class PipelineConfig:
     aoi_path: str
     dem: DemConfig
     gfm: GfmConfig
+    population: PopulationConfig
     flexth: dict
     source_path: Path
 
@@ -231,9 +247,13 @@ class PipelineConfig:
             if p.is_dir() and SCENE_DIR_RE.match(p.name)
         )
 
-    def scene_work_root(self, band: str) -> Path:
-        """FLEXTH work root for a band (holds one subfolder per scene)."""
-        return self.work_dir / band
+    def population_path(self) -> Path:
+        """The WorldPop raster used for exposure calculations."""
+        return self.data_dir / self.population.out_name
+
+    def scene_work_dir(self, stamp: str) -> Path:
+        """FLEXTH work dir for one scene (own flood.tif/dtm.tif)."""
+        return self.work_dir / stamp
 
     def scene_output_root(self, band: str) -> Path:
         """FLEXTH output root for a band (holds one subfolder per scene)."""
@@ -321,6 +341,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         aoi_path=str(aoi_section.get("path", "aoi.gpkg")),
         dem=_section_to_dataclass(DemConfig, raw, "dem"),
         gfm=gfm,
+        population=_section_to_dataclass(PopulationConfig, raw, "population"),
         flexth=raw.get("flexth") or {},
         source_path=path.resolve(),
     )
@@ -333,6 +354,7 @@ def to_dict(cfg: PipelineConfig) -> dict:
         "aoi": {"path": cfg.aoi_path},
         "dem": dataclasses.asdict(cfg.dem),
         "gfm": dataclasses.asdict(cfg.gfm),
+        "population": dataclasses.asdict(cfg.population),
         "flexth": cfg.flexth,
     }
 
@@ -372,8 +394,16 @@ def validate(cfg: PipelineConfig) -> list[str]:
         errors.append(
             f"dem.delivery must be one of {DEM_DELIVERY_MODES}, got {cfg.dem.delivery!r}"
         )
-    if cfg.dem.enabled and not cfg.project.gee_project:
-        errors.append("project.gee_project must be set when the dem step is enabled")
+    if (cfg.dem.enabled or cfg.population.enabled) and not cfg.project.gee_project:
+        errors.append(
+            "project.gee_project must be set when the dem or population step is enabled"
+        )
+    if cfg.population.year != 2020:
+        errors.append(
+            "population.year must be 2020 for the configured WorldPop age/sex collection"
+        )
+    if cfg.population.scale <= 0:
+        errors.append("population.scale must be greater than zero")
     if cfg.gfm.aggregation not in GFM_AGGREGATIONS:
         errors.append(
             f"gfm.aggregation must be one of {GFM_AGGREGATIONS}, got {cfg.gfm.aggregation!r}"
@@ -382,6 +412,10 @@ def validate(cfg: PipelineConfig) -> list[str]:
         errors.append(
             f"gfm.min_area_ha must be >= 0 (0 disables the filter), "
             f"got {cfg.gfm.min_area_ha!r}"
+        )
+    if cfg.gfm.out_name != GFM_MAX_NAME:
+        errors.append(
+            f"gfm.out_name must be {GFM_MAX_NAME!r}, got {cfg.gfm.out_name!r}"
         )
     if is_likelihood_band(cfg.gfm.band) and not 1 <= cfg.gfm.likelihood_threshold <= 100:
         errors.append(

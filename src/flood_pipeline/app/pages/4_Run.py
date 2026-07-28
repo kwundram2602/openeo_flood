@@ -39,6 +39,7 @@ enabled_by_step = {
     "dem": cfg.dem.enabled,
     "gfm": cfg.gfm.enabled,
     "flexth": bool(cfg.flexth.get("enabled", True)),
+    "population": cfg.population.enabled,
 }
 st.markdown("**Steps to run** (steps disabled in the config are skipped either way):")
 columns = st.columns(len(STEP_ORDER))
@@ -48,10 +49,14 @@ selected_steps = [
     if column.checkbox(step, value=enabled_by_step[step])
 ]
 
-if "dem" in selected_steps and enabled_by_step["dem"] and cfg.dem.delivery == "local":
-    with st.expander("Google Earth Engine status (needed for the dem step)"):
+needs_gee = (
+    ("dem" in selected_steps and enabled_by_step["dem"])
+    or ("population" in selected_steps and enabled_by_step["population"])
+)
+if needs_gee:
+    with st.expander("Google Earth Engine status (needed for DEM/WorldPop)"):
         st.caption(
-            "The dem step needs cached GEE credentials; the dashboard cannot run "
+            "The DEM and WorldPop steps need cached GEE credentials; the dashboard cannot run "
             "the interactive login itself."
         )
         if st.button("Check GEE authentication"):

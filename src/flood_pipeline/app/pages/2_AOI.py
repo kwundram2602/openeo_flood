@@ -52,7 +52,7 @@ map_state = st_folium(
     fmap,
     key="aoi_map",
     height=550,
-    use_container_width=True,
+    width="stretch",
     returned_objects=["last_active_drawing"],
 )
 

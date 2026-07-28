@@ -17,6 +17,7 @@ from streamlit_folium import st_folium
 from flood_pipeline.app import ui
 from flood_pipeline.config import ConfigError, vector_path
 from flood_pipeline.steps import flexth_step
+from flood_pipeline.steps.population import calculate_exposure
 
 st.set_page_config(page_title="Results", page_icon="🌊", layout="wide")
 st.title("Results")
@@ -57,7 +58,11 @@ def _label(stamp: str) -> str:
 
 
 stamps = list(scenes.keys())  # find_scene_outputs returns them sorted
-stamp = st.select_slider("Scene", options=stamps, format_func=_label)
+if len(stamps) == 1:
+    stamp = stamps[0]
+    st.caption(f"Scene: {_label(stamp)}")
+else:
+    stamp = st.select_slider("Scene", options=stamps, format_func=_label)
 kind = st.radio("Layer", ["Water depth", "Water level"], horizontal=True)
 
 wanted = "WD" if kind == "Water depth" else "WL"
@@ -72,6 +77,13 @@ else:
     scale, mask_values, label = 1.0, (999.0,), "water level [m]"
 
 show_gfm = st.checkbox("Overlay GFM flood mask (red)", value=False)
+population_path = cfg.population_path()
+show_population = st.checkbox(
+    "Overlay WorldPop population (purple)",
+    value=False,
+    disabled=not population_path.exists(),
+)
+
 use_max = st.checkbox(
     "Use whole-time GFM max instead of this scene",
     value=False,
@@ -143,6 +155,22 @@ st.caption(
     "before or after the event carry only a few flooded pixels."
 )
 
+if population_path.exists() and wanted == "WD":
+    try:
+        exposure = calculate_exposure(population_path, selected)
+        st.subheader("Population exposure")
+        exp1, exp2, exp3 = st.columns(3)
+        exp1.metric("Population in AOI", f"{exposure.total_population:,.0f}")
+        exp2.metric("Estimated exposed population", f"{exposure.exposed_population:,.0f}")
+        exp3.metric("Exposed share", f"{exposure.exposed_percent:.1f}%")
+        st.caption(
+            "WorldPop 2020 residential population × fractional modeled flood "
+            "coverage per population cell. Values are estimates, not a live headcount."
+        )
+    except (OSError, ValueError) as e:
+        st.warning(f"Could not calculate population exposure: {e}")
+elif not population_path.exists():
+    st.info("Run the population step to add WorldPop exposure statistics.")
 # Base map holds only the tiles and its fit_bounds, so its rendered string stays
 # identical from rerun to rerun. streamlit-folium then never reloads it and the
 # browser keeps whatever pan/zoom the user set — stepping the slider only swaps
@@ -294,6 +322,17 @@ if show_likelihood:
             f"Band `{band}` has no likelihood raster — select a *_likelihood band."
         )
 
+if show_population and population_path.exists():
+    population_overlay = ui.raster_overlay(
+        population_path, cmap="Purples", mask_values=(0.0,), scale=1.0
+    )
+    folium.raster_layers.ImageOverlay(
+        image=population_overlay.rgba,
+        bounds=population_overlay.bounds,
+        opacity=0.65,
+        name="WorldPop 2020 population",
+    ).add_to(fmap)
+
 if cfg.aoi_abs_path.exists():
     ui.add_aoi_layer(overlays, cfg.aoi_abs_path)
 
@@ -361,7 +400,7 @@ else:
 
 st.pyplot(
     ui.colorbar_figure(overlay.vmin, overlay.vmax, "Blues", label),
-    use_container_width=False,
+    width="content",
 )
 st.caption(
     "Color range is the 2nd-98th percentile of valid pixels; the map is a "

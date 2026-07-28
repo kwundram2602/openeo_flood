@@ -64,7 +64,7 @@ frame = pd.DataFrame(scenes)
 selection = st.dataframe(
     frame,
     hide_index=True,
-    use_container_width=True,
+    width="stretch",
     on_select="rerun",
     selection_mode="multi-row",
 )

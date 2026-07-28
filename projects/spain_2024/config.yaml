@@ -1,5 +1,5 @@
 project:
-  name: austria_demo
+  name: spain_2024
   gee_project: ee-davidvoellner
   data_dir: flood_data
   work_dir: preprocessed
@@ -21,8 +21,8 @@ gfm:
   collection: GFM
   band: ensemble_flood_extent
   temporal_extent:
-  - '2024-09-16'
-  - '2024-09-22'
+  - '2024-10-28'
+  - '2024-11-04'
   resolution: 0.0003
   max_items: 100
   aggregation: max
@@ -35,7 +35,7 @@ population:
   scale: 100
   crs: EPSG:4326
   out_name: worldpop_2020.tif
-  overwrite: false
+  overwrite: true
 flexth:
   enabled: true
   resample:
@@ -60,7 +60,7 @@ flexth:
       size_gaps_close: 0.05
       border_percentile: 0.5
       max_number_neighbors: 100
-      min_flood_size: 50
+      min_flood_size: 10
       inner_quantile: 0.98
       inverse_dist_exp: 2
       max_propagation_distance: 10
