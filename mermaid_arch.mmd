@@ -1,0 +1,83 @@
+flowchart TB
+    subgraph entry["Entry Points"]
+        CLI["cli.py<br/>Click CLI: run · scenes · auth · dashboard"]
+    end
+
+    subgraph dashboard["Dashboard — app/ (Streamlit)"]
+        Home["Home.py<br/>project picker, status"]
+        Pages["pages/<br/>1_Config · 2_AOI · 3_GFM_Scenes<br/>4_Run · 5_Results"]
+        UI["ui.py<br/>session state, raster overlays, map helpers"]
+        Home --> UI
+        Pages --> UI
+    end
+
+    subgraph core["Pipeline Core"]
+        Config["config.py<br/>PipelineConfig · load/save/validate<br/>path layout (data/work/output dirs)"]
+        Runner["runner.py<br/>run_pipeline() · STEP_ORDER<br/>##[step]/##[pipeline] log markers"]
+        StepsIface["steps/__init__.py<br/>StepOutcome · LogFn contract"]
+    end
+
+    subgraph steps["Pipeline Steps — steps/"]
+        Dem["dem.py<br/>FABDEM DEM fetch"]
+        Gfm["gfm.py<br/>GFM flood-extent cube"]
+        Flexth["flexth_step.py<br/>FLEXTH config gen + driver"]
+    end
+
+    subgraph support["Support modules"]
+        Gee["gee.py<br/>EE session init/auth"]
+        Polygonize["polygonize.py<br/>connected flood areas → polygons"]
+    end
+
+    subgraph external["External Services"]
+        GEE[("Google Earth Engine<br/>FABDEM collection")]
+        STAC[("EODC STAC API<br/>GFM catalog")]
+        FlexthPkg["flexth package (git dep)<br/>run as subprocess: flexth.cli pipeline"]
+    end
+
+    subgraph data["Data / Storage (per project folder)"]
+        ConfigYaml[("config.yaml")]
+        FloodData[("flood_data/<band>/<stamp>/<br/>DEM, GFM masks, exclusion,<br/>likelihood, flood polygons (.gpkg)")]
+        WorkDir[("preprocessed/<band>/<stamp>/<br/>FLEXTH work dirs, shared dtm.tif")]
+        OutputDir[("wl_wd_out/<band>/<stamp>/<br/>WD_*.tif / WL_*.tif, fill raster")]
+    end
+
+    CLI -->|load_config / validate| Config
+    CLI -->|run_pipeline| Runner
+    CLI -->|"streamlit run Home.py"| Home
+    Pages -->|"subprocess: flood-pipeline run"| CLI
+    UI -->|pipeline_cfg / validate| Config
+
+    Runner --> StepsIface
+    Runner -->|dispatch by name| Dem
+    Runner --> Gfm
+    Runner --> Flexth
+    Runner -->|validate| Config
+
+    Dem --> Gee --> GEE
+    Dem -->|writes DEM| FloodData
+
+    Gfm -->|search + load cube| STAC
+    Gfm --> Polygonize
+    Gfm -->|writes scenes, masks, polygons| FloodData
+
+    Flexth -->|reads DEM + GFM scene| FloodData
+    Flexth -->|generates flexth_config.yaml, runs| FlexthPkg
+    Flexth --> WorkDir
+    Flexth --> OutputDir
+
+    Config <-->|read/write YAML| ConfigYaml
+
+    classDef entryStyle fill:#4c6ef5,stroke:#364fc7,color:#fff
+    classDef coreStyle fill:#12b886,stroke:#087f5b,color:#fff
+    classDef stepStyle fill:#fab005,stroke:#e67700,color:#000
+    classDef externalStyle fill:#868e96,stroke:#495057,color:#fff
+    classDef dataStyle fill:#e64980,stroke:#a61e4d,color:#fff
+    classDef dashStyle fill:#7048e8,stroke:#4c2889,color:#fff
+
+    class CLI entryStyle
+    class Home,Pages,UI dashStyle
+    class Config,Runner,StepsIface coreStyle
+    class Dem,Gfm,Flexth stepStyle
+    class Gee,Polygonize stepStyle
+    class GEE,STAC,FlexthPkg externalStyle
+    class ConfigYaml,FloodData,WorkDir,OutputDir dataStyle
