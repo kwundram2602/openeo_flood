@@ -5,7 +5,11 @@ import datetime
 import streamlit as st
 
 from flood_pipeline.app import ui
-from flood_pipeline.config import DEM_DELIVERY_MODES, GFM_AGGREGATIONS
+from flood_pipeline.config import (
+    DEM_DELIVERY_MODES,
+    GFM_AGGREGATIONS,
+    GFM_SELECTABLE_BANDS,
+)
 
 st.set_page_config(page_title="Config", page_icon="⚙️", layout="wide")
 st.title("Configuration")
@@ -84,7 +88,14 @@ with st.form("gfm_form"):
     stac_url = st.text_input("STAC URL", value=gfm.get("stac_url", "https://stac.eodc.eu/api/v1"))
     col1, col2 = st.columns(2)
     collection = col1.text_input("Collection", value=gfm.get("collection", "GFM"))
-    band = col2.text_input("Band", value=gfm.get("band", "ensemble_flood_extent"))
+    band_options = list(GFM_SELECTABLE_BANDS)
+    current_band = gfm.get("band", "ensemble_flood_extent")
+    if current_band not in band_options:
+        band_options = [current_band, *band_options]  # keep a custom value
+    band = col2.selectbox(
+        "Band", band_options, index=band_options.index(current_band),
+        help="*_flood_extent are binary; ensemble_likelihood is thresholded",
+    )
     extent = gfm.get("temporal_extent", ["2024-09-15", "2024-09-20"])
     dates = st.date_input(
         "Temporal extent",
@@ -114,6 +125,19 @@ with st.form("gfm_form"):
         min_value=0.0, step=0.5,
         help="smallest connected flood area kept as a polygon; 0 = keep every speck",
     )
+    likelihood_threshold = st.number_input(
+        "Likelihood threshold [%]",
+        value=int(gfm.get("likelihood_threshold", 25)),
+        min_value=1, max_value=100, step=5,
+        help="only used when the band is a *_likelihood band",
+    )
+    compare_algorithms = st.checkbox(
+        "Compare algorithms (ensemble, dlr, tuw, list)",
+        value=gfm.get("compare_algorithms", False),
+        help="Run flood extent + water depth for all four GFM algorithms instead of "
+        "the single Band above (4× the FLEXTH runs); the Results page then shows a "
+        "band dropdown",
+    )
     if st.form_submit_button("Save gfm"):
         if len(dates) != 2:
             st.error("Pick both a start and an end date.")
@@ -123,6 +147,8 @@ with st.form("gfm_form"):
                 temporal_extent=[dates[0].isoformat(), dates[1].isoformat()],
                 resolution=float(resolution), max_items=int(max_items),
                 aggregation=aggregation, min_area_ha=float(min_area_ha),
+                compare_algorithms=compare_algorithms,
+                likelihood_threshold=int(likelihood_threshold),
             )
             _saved("gfm")
 
@@ -186,6 +212,12 @@ params = flood_processing.setdefault("params", {})
 with st.form("flexth_form"):
     st.subheader("FLEXTH (water depth)")
     flexth_enabled = st.checkbox("Enabled", value=flexth.get("enabled", True))
+    fill_excluded = st.checkbox(
+        "Fill excluded/urban areas (feed FLEXTH the exclusion + permanent-water masks)",
+        value=flexth.get("fill_excluded", False),
+        help="FLEXTH interpolates a water surface into the urban zones GFM could "
+        "not observe; the Results page can overlay what it added",
+    )
 
     st.markdown("**Resample** — GFM mask → metric master grid (`flood.tif`)")
     col1, col2, col3, col4 = st.columns(4)
@@ -252,6 +284,7 @@ with st.form("flexth_form"):
 
     if st.form_submit_button("Save flexth"):
         flexth["enabled"] = flexth_enabled
+        flexth["fill_excluded"] = fill_excluded
         resample.update(
             enabled=resample_enabled, crs=resample_crs,
             resolution=[int(res_x), int(res_y)],

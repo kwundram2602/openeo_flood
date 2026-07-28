@@ -30,12 +30,24 @@ except ConfigError as e:
     st.error(str(e))
     st.stop()
 
-scenes = flexth_step.find_scene_outputs(cfg.output_dir)
-if not scenes:
+bands = cfg.gfm_output_bands()
+if not bands:
     st.info(
         f"No per-scene WD_/WL_ rasters under `{cfg.output_dir}` yet — run the "
         "pipeline first (Run page)."
     )
+    st.stop()
+band = (
+    bands[0]
+    if len(bands) == 1
+    else st.selectbox(
+        "Algorithm band", bands, help="GFM flood-detection algorithm to display."
+    )
+)
+
+scenes = flexth_step.find_scene_outputs(cfg.scene_output_root(band))
+if not scenes:
+    st.info(f"No scenes for band `{band}` yet — run the pipeline (Run page).")
     st.stop()
 
 
@@ -77,8 +89,31 @@ use_max = st.checkbox(
     value=False,
     disabled=not show_gfm,
 )
+show_reference_water = st.checkbox(
+    "Overlay GFM Reference Water Mask (dark blue)", value=False
+)
+show_exclusion = st.checkbox(
+    "Overlay GFM exclusion mask (grey) — pixels GFM could not evaluate",
+    value=False,
+)
+show_fill = st.checkbox(
+    "Show interpolation-added flood (orange) — pixels FLEXTH added beyond GFM",
+    value=False,
+)
+show_likelihood = st.checkbox(
+    "Overlay likelihood (viridis) — raw GFM probability, likelihood bands only",
+    value=False,
+)
+likelihood_range = st.slider(
+    "Likelihood color range [%]",
+    min_value=0,
+    max_value=100,
+    value=(10, 100),
+    disabled=not show_likelihood,
+    help="Narrow the range (e.g. 10–50) to bring out low probabilities.",
+)
 
-gfm_path = cfg.gfm_mask_path() if use_max else cfg.gfm_scene_path(stamp)
+gfm_path = cfg.gfm_mask_path(band) if use_max else cfg.gfm_scene_path(band, stamp)
 areas = ui.flood_areas(vector_path(gfm_path))
 selected_area_id = None
 choice = WHOLE_AOI
@@ -113,8 +148,12 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("min", f"{overlay.valid_min:.2f} m")
 col2.metric("mean", f"{overlay.valid_mean:.2f} m")
 col3.metric("max", f"{overlay.valid_max:.2f} m")
-col4.metric("valid pixels", f"{overlay.valid_fraction:.1%}")
-st.caption("Statistics exclude nodata (0) and the permanent-water sentinel (999).")
+col4.metric("valid pixels", ui.format_share(overlay.valid_fraction))
+st.caption(
+    "Statistics exclude nodata (0) and the permanent-water sentinel (999). "
+    "A share far below 1% is a real reading, not an empty scene — acquisitions "
+    "before or after the event carry only a few flooded pixels."
+)
 
 if population_path.exists() and wanted == "WD":
     try:
@@ -190,8 +229,98 @@ if show_gfm:
     else:
         st.warning(f"GFM raster not found: {gfm_path}")
 
-if areas is not None and not areas.empty:
-    ui.add_flood_area_layer(overlays, areas, selected_id=selected_area_id)
+if show_reference_water:
+    reference_path = cfg.gfm_reference_water_path(band)
+    if reference_path.exists():
+        # Solid dark blue: the reference mask is binary permanent water, so
+        # colormapping its single value would wash out like the flood mask.
+        reference_overlay = ui.raster_overlay(
+            reference_path, mask_values=(0.0,), scale=1.0, solid_color="#08306b"
+        )
+        folium.raster_layers.ImageOverlay(
+            image=reference_overlay.rgba,
+            bounds=reference_overlay.bounds,
+            opacity=0.75,
+            name="GFM reference water",
+        ).add_to(overlays)
+    else:
+        st.caption(
+            "No GFM reference water mask yet — re-run the GFM step to create it."
+        )
+
+if show_exclusion:
+    # Always this scene's own mask, never the max toggle: the exclusion is
+    # pass-geometry specific, so it belongs to the acquisition being shown.
+    exclusion_path = cfg.gfm_exclusion_path(band, stamp)
+    if exclusion_path.exists():
+        try:
+            # Solid grey: binary mask of pixels GFM could not evaluate.
+            exclusion_overlay = ui.raster_overlay(
+                exclusion_path, mask_values=(0.0,), scale=1.0, solid_color="#606060"
+            )
+        except ValueError:
+            st.caption(
+                f"GFM excluded nothing over the AOI for scene {_label(stamp)} — "
+                "this pass evaluated the whole area."
+            )
+        else:
+            folium.raster_layers.ImageOverlay(
+                image=exclusion_overlay.rgba,
+                bounds=exclusion_overlay.bounds,
+                opacity=0.6,
+                name=f"GFM exclusion {_label(stamp)}",
+            ).add_to(overlays)
+    else:
+        st.caption(
+            "No GFM exclusion mask for this scene — re-run the GFM step to create it."
+        )
+
+if show_fill:
+    fill_path = cfg.scene_fill_path(band, stamp)
+    if fill_path.exists():
+        try:
+            # Solid orange: binary mask of what FLEXTH added beyond the GFM extent.
+            fill_overlay = ui.raster_overlay(
+                fill_path, mask_values=(0.0,), scale=1.0, solid_color="#ff7f00"
+            )
+        except ValueError:
+            st.caption(f"No interpolation-added pixels for scene {_label(stamp)}.")
+        else:
+            folium.raster_layers.ImageOverlay(
+                image=fill_overlay.rgba,
+                bounds=fill_overlay.bounds,
+                opacity=0.75,
+                name=f"interpolation-added {_label(stamp)}",
+            ).add_to(overlays)
+    else:
+        st.caption(
+            "No interpolation-added raster for this scene — re-run FLEXTH (needs a "
+            "WD output; enable flexth.fill_excluded for the urban fill)."
+        )
+
+if show_likelihood:
+    likelihood_path = cfg.gfm_likelihood_path(band, stamp)
+    if likelihood_path.exists():
+        try:
+            likelihood_overlay = ui.raster_overlay(
+                likelihood_path,
+                cmap="viridis",
+                vmin=float(likelihood_range[0]),
+                vmax=float(likelihood_range[1]),
+            )
+        except ValueError:
+            st.caption(f"No likelihood values for scene {_label(stamp)}.")
+        else:
+            folium.raster_layers.ImageOverlay(
+                image=likelihood_overlay.rgba,
+                bounds=likelihood_overlay.bounds,
+                opacity=0.75,
+                name=f"likelihood {_label(stamp)}",
+            ).add_to(overlays)
+    else:
+        st.caption(
+            f"Band `{band}` has no likelihood raster — select a *_likelihood band."
+        )
 
 if show_population and population_path.exists():
     population_overlay = ui.raster_overlay(
@@ -258,6 +387,13 @@ else:
     probe_col, coord_col = st.columns([1, 3])
     probe_col.metric(kind, reading)
     coord_col.caption(f"at {lat:.5f}, {lon:.5f} — {note}")
+    likelihood_path = cfg.gfm_likelihood_path(band, stamp)
+    if likelihood_path.exists():
+        lk = ui.sample_raster(likelihood_path, lat, lon)
+        if lk is None or math.isnan(lk):
+            coord_col.caption("likelihood: —")
+        else:
+            coord_col.caption(f"likelihood: {lk:.0f} %")
     if coord_col.button("Clear probe"):
         del st.session_state["results_probe"]
         st.rerun()
