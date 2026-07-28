@@ -1,0 +1,30 @@
+flowchart LR
+
+%% Data Sources
+subgraph Sources
+    GFM["Global Flood Monitor<br/>(EODC STAC)"]
+    DEM["FABDEM DEM<br/>(Google Earth Engine)"]
+end
+
+%% Preprocessing
+subgraph Preprocessing
+    GFM_PROC["GFM Processing<br/>• Select ensemble/DLR/TUW/LIST band<br/>• Extract flood extent<br/>• Create exclusion mask<br/>• Reference water"]
+    DEM_PROC["DEM Processing<br/>Generate FABDEM (30 m)"]
+end
+
+%% Core Processing
+subgraph FLEXTH
+    FLEX["FLEXTH<br/><br/>• Resample<br/>• Prepare DTM<br/>• Flood processing<br/>• Interpolation"]
+end
+
+%% Output
+OUT["Water Depth / Water Level"]
+
+%% Flow
+GFM -->|"Data cube"| GFM_PROC
+DEM -->|"Elevation"| DEM_PROC
+
+GFM_PROC -->|"Flood extent + masks"| FLEX
+DEM_PROC -->|"DTM grid"| FLEX
+
+FLEX --> OUT
