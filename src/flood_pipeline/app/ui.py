@@ -16,6 +16,7 @@ import folium
 import geopandas as gpd
 import matplotlib
 import matplotlib.colors
+import matplotlib.patches
 import numpy as np
 import streamlit as st
 import yaml
@@ -43,6 +44,32 @@ def display_colormap(cmap: str) -> matplotlib.colors.Colormap:
     return matplotlib.colors.LinearSegmentedColormap.from_list(
         f"{cmap}_from_{CMAP_FLOOR}", base(np.linspace(CMAP_FLOOR, 1.0, 256))
     )
+
+# Exact GHSL settlement classification color mapping
+GHSL_COLOR_DICT: dict[int, str] = {
+    1: "#718c6c",   # open spaces, low vegetation surfaces
+    2: "#8ad86b",   # open spaces, medium vegetation surfaces
+    3: "#c1ffa1",   # open spaces, high vegetation surfaces
+    4: "#01b7ff",   # open spaces, water surfaces
+    5: "#ffd501",   # open spaces, road surfaces
+    11: "#d28200",  # built spaces, residential, height <= 3m
+    12: "#fe5900",  # built spaces, residential, 3m < height <= 6m
+    13: "#ff0101",  # built spaces, residential, 6m < height <= 15m
+    14: "#ce001b",  # built spaces, residential, 15m < height <= 30m
+    15: "#7a000a",  # built spaces, residential, height > 30m
+    21: "#ff9ff4",  # built spaces, non-residential, height <= 3m
+    22: "#ff67e4",  # built spaces, non-residential, 3m < height <= 6m
+    23: "#f701ff",  # built spaces, non-residential, 6m < height <= 15m
+    24: "#a601ff",  # built spaces, non-residential, 15m < height <= 30m
+    25: "#6e00fe",  # built spaces, non-residential, height > 30m
+}
+
+# GHSL+Depth+Damage raster band layout (matches ghsl_step._combine_ghsl_and_depth).
+# Values are 0-indexed band_index for ui.raster_overlay()/sample_raster().
+GHSL_DEPTH_BANDS: dict[str, int] = {
+    "GHSL class": 0,       # band 1: GHSL characteristics, discrete classes
+    "Relative damage": 2,  # band 3: JRC depth-damage fraction, 0-1
+}
 
 
 def discover_project_configs() -> list[Path]:
@@ -206,8 +233,10 @@ def add_flood_area_layer(
             # when the loop variable would already point at the last row.
             style_function=lambda _feat, chosen=chosen: {
                 "color": "#ff7f0e" if chosen else "#8c564b",
-                "weight": 4 if chosen else 2,
-                "fill": False,
+                "weight": 2 if chosen else 1,
+                "fill": True,
+                "fillColor": "#ff7f0e" if chosen else "#8c564b",
+                "fillOpacity": 0.35,
             },
             tooltip=flood_area_label(row.area_id, row.area_ha),
         ).add_to(parent)
@@ -242,34 +271,30 @@ class RasterOverlay:
 
 
 def raster_overlay(
-    path: Path,
+    path: Path | str,
     *,
     cmap: str = "Blues",
     max_dim: int = 1500,
     mask_values: tuple[float, ...] = (),
     scale: float = 1.0,
     solid_color: str | None = None,
+    band_index: int = 0,
     vmin: float | None = None,
     vmax: float | None = None,
 ) -> RasterOverlay:
-    """Load a raster as a colormapped RGBA overlay in EPSG:4326.
-
-    The raster is decimated to at most ``max_dim`` pixels per axis before
-    reprojection, ``mask_values`` (e.g. nodata 0 and the 999 permanent-water
-    sentinel) become transparent, and values are multiplied by ``scale``
-    (0.01 converts FLEXTH's WD centimeters to meters).
-
-    ``solid_color`` paints every valid pixel in that one color instead of
-    colormapping the values — the right choice for a binary mask, whose single
-    remaining value would otherwise land at the washed-out low end of ``cmap``.
-
-    ``vmin``/``vmax`` fix the color-stretch bounds (in scaled units); pass both
-    to override the default 2nd-98th-percentile stretch — e.g. a narrow range to
-    bring out the low end of a skewed likelihood layer.
-    """
+    """Load a raster as a colormapped RGBA overlay in EPSG:4326."""
+    path = Path(path)
     fields = _build_overlay(
-        str(path), path.stat().st_mtime, cmap, max_dim, mask_values, scale,
-        solid_color, vmin, vmax,
+        path_str=str(path),
+        _mtime=path.stat().st_mtime,
+        cmap=cmap,
+        max_dim=max_dim,
+        mask_values=mask_values,
+        scale=scale,
+        solid_color=solid_color,
+        band_index=band_index,
+        vmin_override=vmin,
+        vmax_override=vmax,
     )
     return RasterOverlay(**fields)
 
@@ -283,19 +308,23 @@ def _build_overlay(
     mask_values: tuple[float, ...],
     scale: float,
     solid_color: str | None = None,
+    band_index: int = 0,
     vmin_override: float | None = None,
     vmax_override: float | None = None,
 ) -> dict:
-    """Compute the overlay fields as a plain dict.
-
-    Returns a dict rather than a :class:`RasterOverlay` so the cached value
-    embeds no custom-class reference: pickling it never depends on the class
-    identity in ``sys.modules``, which a live module reload (editing this file
-    while the app runs) would otherwise invalidate.
-    """
+    """Compute the overlay fields as a plain dict."""
     import rioxarray
 
-    data = rioxarray.open_rasterio(path_str, masked=True).squeeze(drop=True)
+    data = rioxarray.open_rasterio(path_str, masked=True)
+    if "band" in data.dims:
+        band_count = data.sizes["band"]
+        if band_index >= band_count:
+            raise ValueError(
+                f"requested band_index={band_index} but {path_str} only has "
+                f"{band_count} band(s)"
+            )
+        data = data.isel(band=band_index)
+    data = data.squeeze(drop=True)
     step_y = max(1, data.sizes["y"] // max_dim)
     step_x = max(1, data.sizes["x"] // max_dim)
     if step_y > 1 or step_x > 1:
@@ -324,9 +353,19 @@ def _build_overlay(
 
     if solid_color is not None:
         rgba = np.tile(matplotlib.colors.to_rgba(solid_color), values.shape + (1,))
+    elif cmap == "GHSL":
+        rgba = np.zeros(values.shape + (4,), dtype=np.float32)
+        int_values = np.nan_to_num(values, nan=0).astype(int)
+        known_class_mask = np.zeros(values.shape, dtype=bool)
+        for class_id, hex_code in GHSL_COLOR_DICT.items():
+            class_mask = (int_values == class_id) & finite_mask
+            rgba[class_mask] = matplotlib.colors.to_rgba(hex_code)
+            known_class_mask |= class_mask
+        finite_mask = finite_mask & known_class_mask
     else:
         normalized = np.clip((values - vmin) / (vmax - vmin), 0.0, 1.0)
-        rgba = display_colormap(cmap)(np.nan_to_num(normalized, nan=0.0))
+        rgba = matplotlib.colormaps[cmap](np.nan_to_num(normalized, nan=0.0))
+
     rgba[..., 3] = np.where(finite_mask, OVERLAY_OPACITY, 0.0)
 
     left, bottom, right, top = data.rio.bounds()
@@ -349,15 +388,9 @@ def sample_raster(
     *,
     mask_values: tuple[float, ...] = (),
     scale: float = 1.0,
+    band_index: int = 0,
 ) -> float | None:
-    """Value of ``path`` at a WGS84 point, read at full resolution.
-
-    Unlike :func:`raster_overlay` this does not decimate, so the returned value
-    is the one stored in the GeoTIFF. Returns ``None`` when the point falls
-    outside the raster, ``nan`` when the pixel is nodata or one of
-    ``mask_values`` (compared before scaling, as in the overlay), otherwise the
-    value multiplied by ``scale``.
-    """
+    """Value of ``path`` at a WGS84 point, read at full resolution."""
     import rasterio
     from rasterio.warp import transform as warp_transform
 
@@ -369,8 +402,7 @@ def sample_raster(
         if not (0 <= row < src.height and 0 <= col < src.width):
             return None
         window = rasterio.windows.Window(col, row, 1, 1)
-        # Cast before filling: the integer WD rasters cannot hold NaN.
-        pixel = src.read(1, window=window, masked=True).astype("float32")
+        pixel = src.read(band_index + 1, window=window, masked=True).astype("float32")
         value = float(pixel.filled(np.nan)[0, 0])
 
     if value in mask_values:
@@ -383,10 +415,20 @@ def colorbar_figure(vmin: float, vmax: float, cmap: str, label: str):
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=(5, 0.9))
-    ax = fig.add_axes((0.05, 0.55, 0.9, 0.3))  # leave room for the label below
+    ax = fig.add_axes((0.05, 0.55, 0.9, 0.3))
+
+    if cmap == "GHSL":
+        patches = [
+            matplotlib.patches.Patch(color=hex_code, label=f"Class {cid}")
+            for cid, hex_code in GHSL_COLOR_DICT.items()
+        ]
+        fig.legend(handles=patches, loc="center", ncol=3, fontsize="x-small", frameon=False)
+        ax.axis("off")
+        return fig
+
     mappable = matplotlib.cm.ScalarMappable(
         norm=matplotlib.colors.Normalize(vmin=vmin, vmax=vmax),
-        cmap=display_colormap(cmap),  # same ramp as the overlay, or it lies
+        cmap=display_colormap(cmap),
     )
     fig.colorbar(mappable, cax=ax, orientation="horizontal")
     ax.set_xlabel(label)

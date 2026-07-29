@@ -31,7 +31,7 @@ def _load_or_fail(config_path: str) -> PipelineConfig:
 
 @click.group()
 def cli():
-    """Unified flood pipeline: FABDEM DEM -> GFM flood extent -> FLEXTH water depth."""
+    """Unified flood pipeline: FABDEM DEM -> GFM flood extent -> FLEXTH water depth -> GHSL settlement."""
 
 
 @cli.command("run")
