@@ -1,6 +1,6 @@
 project:
   name: valencia_2024
-  gee_project: ee-kwun
+  gee_project: ee-makhmetrauan
   data_dir: flood_data
   work_dir: preprocessed
   output_dir: wl_wd_out
@@ -21,8 +21,8 @@ gfm:
   collection: GFM
   band: ensemble_likelihood
   temporal_extent:
-  - '2024-10-24'
-  - '2024-11-01'
+  - '2024-10-30'
+  - '2024-11-17'
   resolution: 0.0003
   max_items: 0
   aggregation: max
@@ -65,3 +65,6 @@ flexth:
       kern_closing_size: 3
       closing_iterations: 2
   fill_excluded: true
+osm:
+  enabled: true
+population: {}

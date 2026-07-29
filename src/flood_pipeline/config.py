@@ -1,9 +1,9 @@
 """Unified pipeline configuration: dataclasses, YAML I/O and validation.
 
-The config file has one section per pipeline step (``dem``, ``gfm``, ``flexth``)
-plus shared ``project`` and ``aoi`` sections. All paths in the file are
-interpreted relative to the directory containing the YAML file, so the config
-stays portable across machines.
+The config file has one section per pipeline step (``dem``, ``gfm``, ``osm``,
+``flexth``) plus shared ``project`` and ``aoi`` sections. All paths in the
+file are interpreted relative to the directory containing the YAML file, so
+the config stays portable across machines.
 
 The ``flexth`` section is a raw dict passthrough: it is copied verbatim into
 the generated FLEXTH config (see :mod:`flood_pipeline.steps.flexth_step`), so
@@ -149,6 +149,13 @@ class PopulationConfig:
     overwrite: bool = False
 
 
+@dataclass
+class OsmConfig:
+    """OSM infrastructure extraction and flood-impact summary."""
+
+    enabled: bool = False
+
+
 
 @dataclass
 class PipelineConfig:
@@ -158,6 +165,7 @@ class PipelineConfig:
     aoi_path: str
     dem: DemConfig
     gfm: GfmConfig
+    osm: OsmConfig
     population: PopulationConfig
     flexth: dict
     source_path: Path
@@ -224,7 +232,7 @@ class PipelineConfig:
         """Raw likelihood raster for a likelihood-band scene (overlay/probe)."""
         return self.gfm_scene_dir(band, stamp) / GFM_LIKELIHOOD_NAME
 
-    def gfm_mask_path(self, band: str) -> Path:
+    def gfm_mask_path(self, band: str = "ensemble") -> Path:
         """Whole-time max flood mask at the band root (reference/overlay)."""
         return self.gfm_band_dir(band) / GFM_MAX_NAME
 
@@ -247,9 +255,59 @@ class PipelineConfig:
             if p.is_dir() and SCENE_DIR_RE.match(p.name)
         )
 
+    def gfm_scene_paths(self, band: str | None = None) -> list[Path]:
+        """Existing per-scene flood rasters, optionally limited to one band."""
+        if band is not None:
+            bands = [band]
+        elif self.data_dir.exists():
+            bands = [p.name for p in self.data_dir.iterdir() if p.is_dir()]
+        else:
+            bands = []
+
+        paths: list[Path] = []
+        for key in bands:
+            for stamp in self.gfm_scene_stamps(key):
+                scene_path = self.gfm_scene_path(key, stamp)
+                if scene_path.exists():
+                    paths.append(scene_path)
+        return paths
+
     def population_path(self) -> Path:
         """The WorldPop raster used for exposure calculations."""
         return self.data_dir / self.population.out_name
+
+    def osm_root(self) -> Path:
+        """OSM source and per-scene flood-impact outputs."""
+        return self.data_dir / "osm"
+
+    def osm_source_dir(self) -> Path:
+        """Shared OSM source layers for the current AOI."""
+        return self.osm_root() / "source"
+
+    def osm_source_roads_path(self) -> Path:
+        return self.osm_source_dir() / "roads.gpkg"
+
+    def osm_source_railways_path(self) -> Path:
+        return self.osm_source_dir() / "railways.gpkg"
+
+    def osm_scene_dir(self, band: str, stamp: str) -> Path:
+        """Per-band/per-scene OSM impact outputs (``stamp`` may be ``max``)."""
+        return self.osm_root() / band / stamp
+
+    def osm_scene_summary_path(self, band: str, stamp: str) -> Path:
+        return self.osm_scene_dir(band, stamp) / "summary.json"
+
+    def osm_scene_roads_path(self, band: str, stamp: str) -> Path:
+        return self.osm_scene_dir(band, stamp) / "roads.gpkg"
+
+    def osm_scene_railways_path(self, band: str, stamp: str) -> Path:
+        return self.osm_scene_dir(band, stamp) / "railways.gpkg"
+
+    def osm_scene_flooded_roads_path(self, band: str, stamp: str) -> Path:
+        return self.osm_scene_dir(band, stamp) / "roads_flooded.gpkg"
+
+    def osm_scene_flooded_railways_path(self, band: str, stamp: str) -> Path:
+        return self.osm_scene_dir(band, stamp) / "railways_flooded.gpkg"
 
     def scene_work_dir(self, stamp: str) -> Path:
         """FLEXTH work dir for one scene (own flood.tif/dtm.tif)."""
@@ -258,6 +316,10 @@ class PipelineConfig:
     def scene_output_root(self, band: str) -> Path:
         """FLEXTH output root for a band (holds one subfolder per scene)."""
         return self.output_dir / band
+
+    def scene_work_root(self, band: str) -> Path:
+        """FLEXTH work root for a band (holds one subfolder per scene)."""
+        return self.work_dir / band
 
     def scene_work_dir(self, band: str, stamp: str) -> Path:
         """FLEXTH work dir for one band/scene (own flood.tif/dtm.tif)."""
@@ -341,6 +403,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         aoi_path=str(aoi_section.get("path", "aoi.gpkg")),
         dem=_section_to_dataclass(DemConfig, raw, "dem"),
         gfm=gfm,
+        osm=_section_to_dataclass(OsmConfig, raw, "osm"),
         population=_section_to_dataclass(PopulationConfig, raw, "population"),
         flexth=raw.get("flexth") or {},
         source_path=path.resolve(),
@@ -354,6 +417,7 @@ def to_dict(cfg: PipelineConfig) -> dict:
         "aoi": {"path": cfg.aoi_path},
         "dem": dataclasses.asdict(cfg.dem),
         "gfm": dataclasses.asdict(cfg.gfm),
+        "osm": dataclasses.asdict(cfg.osm),
         "population": dataclasses.asdict(cfg.population),
         "flexth": cfg.flexth,
     }
@@ -413,6 +477,8 @@ def validate(cfg: PipelineConfig) -> list[str]:
             f"gfm.min_area_ha must be >= 0 (0 disables the filter), "
             f"got {cfg.gfm.min_area_ha!r}"
         )
+    if cfg.osm.enabled and not cfg.gfm.enabled:
+        errors.append("osm.enabled requires gfm.enabled because infrastructure is intersected with the GFM flood mask")
     if cfg.gfm.out_name != GFM_MAX_NAME:
         errors.append(
             f"gfm.out_name must be {GFM_MAX_NAME!r}, got {cfg.gfm.out_name!r}"

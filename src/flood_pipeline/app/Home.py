@@ -119,6 +119,7 @@ with middle:
     st.markdown(
         f"- dem: {'✅' if cfg.dem.enabled else '⏸️'}\n"
         f"- gfm: {'✅' if cfg.gfm.enabled else '⏸️'}\n"
+        f"- osm: {'✅' if cfg.osm.enabled else '⏸️'}\n"
         f"- flexth: {'✅' if cfg.flexth.get('enabled', True) else '⏸️'}"
     )
 with right:
@@ -126,6 +127,7 @@ with right:
     dem_state = "✅" if cfg.dem_path().exists() else "—"
     gfm_mask = cfg.gfm_mask_path(cfg.resolved_bands()[0][0])
     gfm_state = "✅" if gfm_mask.exists() else "—"
+    osm_state = "✅" if cfg.osm_source_roads_path().exists() else "—"
     scene_count = sum(
         len(flexth_step.find_scene_outputs(cfg.scene_output_root(b)))
         for b in cfg.gfm_output_bands()
@@ -133,6 +135,7 @@ with right:
     st.markdown(
         f"- DEM `{cfg.dem.out_name}`: {dem_state}\n"
         f"- GFM `{gfm_mask.name}`: {gfm_state}\n"
+        f"- OSM roads: {osm_state}\n"
         f"- Water-depth scenes: {scene_count}"
     )
 
