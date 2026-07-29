@@ -1,5 +1,5 @@
 project:
-  name: pakistan_2022
+  name: pakistan_demo
   gee_project: wuewill
   data_dir: flood_data
   work_dir: preprocessed
@@ -19,19 +19,21 @@ gfm:
   enabled: true
   stac_url: https://stac.eodc.eu/api/v1
   collection: GFM
-  band: ensemble_flood_extent
+  band: ensemble_likelihood
   temporal_extent:
+  - '2022-08-29'
   - '2022-09-03'
-  - '2022-09-04'
   resolution: 0.0003
   max_items: 0
   aggregation: max
   min_area_ha: 1.0
+  compare_algorithms: true
+  likelihood_threshold: 25
 flexth:
   enabled: true
   resample:
     enabled: true
-    crs: EPSG:32633
+    crs: EPSG:32642
     resolution:
     - 30
     - 30
@@ -62,9 +64,10 @@ flexth:
       number_smoothings: 20
       kern_closing_size: 3
       closing_iterations: 2
+  fill_excluded: false
 ghsl:
   enabled: true
   asset: JRC/GHSL/P2023A/GHS_BUILT_C/2018
   band: built_characteristics
   scale: 10
-  crs: EPSG:4326
+  crs: EPSG:32642

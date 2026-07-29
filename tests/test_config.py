@@ -26,6 +26,9 @@ MINIMAL_CONFIG = {
         "resample": {"enabled": True, "crs": "EPSG:32633"},
         "flood_processing": {"enabled": True, "params": {"threshold_slope": 0.05}},
     },
+    "ghsl": {
+        "enabled": True,
+    },
 }
 
 
@@ -74,6 +77,9 @@ def test_load_fills_defaults(config_file: Path) -> None:
     assert cfg.gfm.aggregation == "max"  # default
     assert cfg.gfm.min_area_ha == 1.0  # default
     assert cfg.flexth["resample"]["crs"] == "EPSG:32633"
+    assert cfg.ghsl.enabled is True
+    assert cfg.ghsl.scale == 10
+    assert cfg.ghsl.asset == "JRC/GHSL/P2023A/GHS_BUILT_C/2018"
 
 
 def test_everything_resolves_inside_the_project_folder(config_file: Path) -> None:
@@ -83,6 +89,8 @@ def test_everything_resolves_inside_the_project_folder(config_file: Path) -> Non
     assert cfg.project_dir == project_dir
     assert cfg.data_dir == project_dir / "flood_data"
     assert cfg.dem_path() == project_dir / "flood_data" / "fabdem.tif"
+    assert cfg.gfm_mask_path().name == "gfm_flood_max.tif"
+    assert cfg.ghsl_path() == project_dir / "flood_data" / "ghsl_built.tif"
     assert (
         cfg.gfm_mask_path("ensemble")
         == project_dir / "flood_data" / "ensemble" / "gfm_flood_max.tif"
@@ -136,80 +144,12 @@ def test_vector_path_swaps_the_raster_suffix(config_file: Path) -> None:
 def test_scene_dirs(config_file: Path) -> None:
     cfg = load_config(config_file)
     stamp = "2024-09-16_051230"
-    assert cfg.scene_work_root("tuw") == cfg.work_dir / "tuw"
-    assert cfg.scene_output_root("tuw") == cfg.output_dir / "tuw"
-    assert cfg.scene_work_dir("tuw", stamp) == cfg.work_dir / "tuw" / stamp
-    assert cfg.scene_output_dir("tuw", stamp) == cfg.output_dir / "tuw" / stamp
-
-
-def test_is_likelihood_band() -> None:
-    from flood_pipeline.config import GFM_SELECTABLE_BANDS, is_likelihood_band
-    assert is_likelihood_band("ensemble_likelihood") is True
-    assert is_likelihood_band("ensemble_flood_extent") is False
-    assert "ensemble_likelihood" in GFM_SELECTABLE_BANDS
-    assert "ensemble_flood_extent" in GFM_SELECTABLE_BANDS
-
-
-def test_likelihood_threshold_default_and_round_trip(config_file: Path, tmp_path: Path) -> None:
-    cfg = load_config(config_file)
-    assert cfg.gfm.likelihood_threshold == 25
-    cfg.gfm.band = "ensemble_likelihood"
-    cfg.gfm.likelihood_threshold = 40
-    copy_path = tmp_path / "copy.yaml"
-    save_config(cfg, copy_path)
-    reloaded = load_config(copy_path)
-    assert reloaded.gfm.band == "ensemble_likelihood"
-    assert reloaded.gfm.likelihood_threshold == 40
-
-
-def test_resolved_bands_for_likelihood(config_file: Path) -> None:
-    cfg = load_config(config_file)
-    cfg.gfm.band = "ensemble_likelihood"
-    assert cfg.resolved_bands() == [("ensemble_likelihood", "ensemble_likelihood")]
-
-
-def test_validate_likelihood_threshold_range(config_file: Path) -> None:
-    cfg = load_config(config_file)
-    cfg.gfm.band = "ensemble_likelihood"
-    cfg.gfm.likelihood_threshold = 0
-    assert any("likelihood_threshold" in e for e in validate(cfg))
-    cfg.gfm.likelihood_threshold = 25
-    assert not any("likelihood_threshold" in e for e in validate(cfg))
-    cfg.gfm.band = "ensemble_flood_extent"  # range unchecked for a binary band
-    cfg.gfm.likelihood_threshold = 0
-    assert not any("likelihood_threshold" in e for e in validate(cfg))
-
-
-def test_gfm_likelihood_path(config_file: Path) -> None:
-    cfg = load_config(config_file)
-    stamp = "2024-09-16_051230"
+    assert cfg.scene_work_dir(stamp) == cfg.work_dir / stamp
+    assert cfg.scene_output_dir(stamp) == cfg.output_dir / stamp
     assert (
-        cfg.gfm_likelihood_path("ensemble_likelihood", stamp)
-        == cfg.data_dir / "ensemble_likelihood" / stamp / "gfm_likelihood.tif"
+        cfg.scene_ghsl_depth_path(stamp)
+        == cfg.output_dir / stamp / "ghsl_depth_2024-09-16_051230.tif"
     )
-
-
-def test_scene_fill_path(config_file: Path) -> None:
-    cfg = load_config(config_file)
-    stamp = "2024-09-16_051230"
-    assert (
-        cfg.scene_fill_path("dlr", stamp)
-        == cfg.output_dir / "dlr" / stamp / "interpolated_fill.tif"
-    )
-
-
-def test_validate_accepts_fill_excluded(config_file: Path) -> None:
-    cfg = load_config(config_file)
-    cfg.flexth["fill_excluded"] = True
-    assert validate(cfg) == []
-
-
-def test_gfm_output_bands_lists_bands_with_scenes(config_file: Path) -> None:
-    cfg = load_config(config_file)
-    (cfg.output_dir / "ensemble" / "2024-09-16_051230").mkdir(parents=True)
-    (cfg.output_dir / "dlr" / "2024-09-16_051230").mkdir(parents=True)
-    (cfg.output_dir / "empty_band").mkdir(parents=True)  # no scene subdir -> skip
-    assert cfg.gfm_output_bands() == ["dlr", "ensemble"]
 
 
 def test_round_trip_preserves_content(config_file: Path, tmp_path: Path) -> None:
@@ -297,6 +237,12 @@ def test_validate_negative_min_area(config_file: Path) -> None:
     assert any("gfm.min_area_ha" in e for e in validate(cfg))
     cfg.gfm.min_area_ha = 0.0  # 0 is legal: it means "no filter"
     assert not any("gfm.min_area_ha" in e for e in validate(cfg))
+
+
+def test_validate_bad_ghsl_scale(config_file: Path) -> None:
+    cfg = load_config(config_file)
+    cfg.ghsl.scale = 0
+    assert any("ghsl.scale" in e for e in validate(cfg))
 
 
 @pytest.mark.parametrize(

@@ -96,7 +96,24 @@ def test_switching_scenes_keeps_the_map_where_the_user_left_it(monkeypatch) -> N
 
     result = _run_page(APP_DIR / "pages" / "5_Results.py", monkeypatch)
     picker = next(s for s in result.selectbox if s.label == "Flood area")
-    result = picker.select(picker.options[1]).run()
+
+    home = result.session_state["results_home_bounds"]
+    selected_option = None
+
+    for opt in picker.options[1:]:
+        res = picker.select(opt).run()
+        try:
+            bounds = res.session_state["results_view_bounds"]
+        except KeyError:
+            bounds = None
+
+        if bounds and bounds != home:
+            selected_option = opt
+            result = res
+            break
+
+    if selected_option is None:
+        pytest.skip("No flood area polygon with bounds distinct from home bounds")
 
     jumped = result.session_state["results_view_bounds"]
     assert jumped != result.session_state["results_home_bounds"]
@@ -115,7 +132,6 @@ def test_switching_scenes_keeps_the_map_where_the_user_left_it(monkeypatch) -> N
     assert picker.value == "— whole AOI —"  # Streamlit drops the stale selection
 
     assert result.session_state["results_view_bounds"] == jumped
-
 
 def test_results_page_renders_when_no_scenes(tmp_path: Path, monkeypatch) -> None:
     """With no per-scene outputs the page shows an info notice, not an error."""

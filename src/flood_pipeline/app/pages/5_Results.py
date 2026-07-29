@@ -1,4 +1,4 @@
-"""Results page: per-scene water-depth / water-level rasters on a map.
+"""Results page: per-scene water-depth / water-level / GHSL-depth rasters on a map.
 
 One scene per GFM acquisition timestamp; step through scenes with the slider.
 The connected flood areas of the scene's GFM mask are drawn as outlines and
@@ -11,6 +11,7 @@ are masked out.
 import math
 
 import folium
+import numpy as np
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -29,7 +30,7 @@ except ConfigError as e:
     st.error(str(e))
     st.stop()
 
-bands = cfg.gfm_output_bands()
+bands = [key for key, _name in cfg.resolved_bands()]
 if not bands:
     st.info(
         f"No per-scene WD_/WL_ rasters under `{cfg.output_dir}` yet — run the "
@@ -56,20 +57,83 @@ def _label(stamp: str) -> str:
     return f"{date} {clock[:2]}:{clock[2:4]}" if clock else stamp
 
 
+def _ensure_3d_rgba(arr: np.ndarray) -> np.ndarray:
+    """Ensure array is uint8 RGBA with shape (H, W, 4) for Folium/Branca."""
+    arr = np.asarray(arr)
+
+    # 1. Squeeze away any leading/extra single dimensions (e.g. (1, 1, H, W) -> (H, W))
+    arr = np.squeeze(arr)
+
+    if arr.ndim not in (2, 3):
+        raise ValueError(
+            f"_ensure_3d_rgba: expected 2D or 3D input after squeeze, got "
+            f"shape {arr.shape} (ndim={arr.ndim}) — check how overlay.rgba is built."
+        )
+
+    # 2. If 2D (grayscale or indexed raster), convert to 4-channel RGBA
+    if arr.ndim == 2:
+        arr = np.dstack([arr, arr, arr, np.full_like(arr, 255)])
+
+    # 3. If channels-first (C, H, W) with C in {3, 4}, move channels to the end
+    elif arr.shape[2] not in (3, 4) and arr.shape[0] in (3, 4):
+        arr = np.transpose(arr, (1, 2, 0))
+
+    # 4. If 3D with 3 channels (RGB), add Alpha channel to make it 4 (RGBA)
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        alpha = np.full((arr.shape[0], arr.shape[1], 1), 255, dtype=arr.dtype)
+        arr = np.concatenate([arr, alpha], axis=2)
+
+    if arr.ndim != 3 or arr.shape[2] != 4:
+        raise ValueError(
+            f"_ensure_3d_rgba: could not coerce array to (H, W, 4), final shape "
+            f"was {arr.shape} — check how overlay.rgba is built."
+        )
+
+    # Ensure contiguous uint8 array format
+    return np.ascontiguousarray(arr, dtype=np.uint8)
+
+
 stamps = list(scenes.keys())  # find_scene_outputs returns them sorted
 stamp = st.select_slider("Scene", options=stamps, format_func=_label)
-kind = st.radio("Layer", ["Water depth", "Water level"], horizontal=True)
+layer_options = ["Water depth", "Water level"]
+if cfg.ghsl.enabled:
+    layer_options.append("GHSL + Depth")
 
-wanted = "WD" if kind == "Water depth" else "WL"
-selected = scenes[stamp].get(wanted)
-if selected is None:
-    st.warning(f"No {wanted} raster for scene {_label(stamp)}.")
-    st.stop()
+kind = st.radio("Layer", layer_options, horizontal=True)
 
-if wanted == "WD":
+if kind == "Water depth":
+    wanted = "WD"
+    selected = scenes[stamp].get(wanted)
     scale, mask_values, label = 0.01, (0.0, 999.0), "water depth [m]"
-else:
+    cmap = "Blues"
+    band_index = 0
+elif kind == "Water level":
+    wanted = "WL"
+    selected = scenes[stamp].get(wanted)
     scale, mask_values, label = 1.0, (999.0,), "water level [m]"
+    cmap = "Blues"
+    band_index = 0
+else:  # GHSL + Depth
+    selected = cfg.scene_ghsl_depth_path(stamp)
+    ghsl_view = st.radio(
+        "GHSL view",
+        list(ui.GHSL_DEPTH_BANDS),
+        horizontal=True,
+        help="GHSL class: settlement type per pixel, from GHSL's built_characteristics "
+        "band. Relative damage: JRC/Huizinga depth-damage fraction (0-1) for this "
+        "AOI's continent, at this scene's flood depth.",
+    )
+    band_index = ui.GHSL_DEPTH_BANDS[ghsl_view]
+    if ghsl_view == "GHSL class":
+        scale, mask_values, label = 1.0, (0.0,), "GHSL settlement class"
+        cmap = "GHSL"
+    else:
+        scale, mask_values, label = 1.0, (0.0,), "relative flood damage [fraction]"
+        cmap = "YlOrRd"
+
+if selected is None or not selected.exists():
+    st.warning(f"No raster found for layer '{kind}' in scene {_label(stamp)}.")
+    st.stop()
 
 show_gfm = st.checkbox("Overlay GFM flood mask (red)", value=False)
 use_max = st.checkbox(
@@ -123,25 +187,21 @@ else:
 
 try:
     overlay = ui.raster_overlay(
-        selected, cmap="Blues", mask_values=mask_values, scale=scale
+        selected, cmap=cmap, mask_values=mask_values, scale=scale, band_index=band_index
     )
 except ValueError:
     st.info(
-        f"Scene {_label(stamp)} has no {kind.lower()} to show — the GFM flood "
+        f"Scene {_label(stamp)} has no valid pixels for {kind.lower()} — the "
         "extent was empty over the AOI for this acquisition."
     )
     st.stop()
 
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("min", f"{overlay.valid_min:.2f} m")
-col2.metric("mean", f"{overlay.valid_mean:.2f} m")
-col3.metric("max", f"{overlay.valid_max:.2f} m")
-col4.metric("valid pixels", ui.format_share(overlay.valid_fraction))
-st.caption(
-    "Statistics exclude nodata (0) and the permanent-water sentinel (999). "
-    "A share far below 1% is a real reading, not an empty scene — acquisitions "
-    "before or after the event carry only a few flooded pixels."
-)
+col1.metric("min", f"{overlay.valid_min:.2f}")
+col2.metric("mean", f"{overlay.valid_mean:.2f}")
+col3.metric("max", f"{overlay.valid_max:.2f}")
+col4.metric("valid pixels", f"{overlay.valid_fraction:.1%}")
+st.caption("Statistics exclude nodata values.")
 
 # Base map holds only the tiles and its fit_bounds, so its rendered string stays
 # identical from rerun to rerun. streamlit-folium then never reloads it and the
@@ -178,7 +238,7 @@ fmap.fit_bounds(st.session_state["results_view_bounds"])
 # Everything that changes with the slider/toggles goes into the feature group.
 overlays = folium.FeatureGroup(name="overlays")
 folium.raster_layers.ImageOverlay(
-    image=overlay.rgba,
+    image=_ensure_3d_rgba(overlay.rgba),
     bounds=overlay.bounds,
     opacity=1.0,  # per-pixel alpha already encodes transparency
     name=selected.name,
@@ -193,7 +253,7 @@ if show_gfm:
             gfm_path, mask_values=(0.0,), scale=1.0, solid_color="#e31a1c"
         )
         folium.raster_layers.ImageOverlay(
-            image=gfm_overlay.rgba,
+            image=_ensure_3d_rgba(gfm_overlay.rgba),
             bounds=gfm_overlay.bounds,
             opacity=0.75,
             name=gfm_name,
@@ -338,13 +398,19 @@ if probe is None:
     st.caption("Click the map to read the value at a point.")
 else:
     lat, lon = probe
-    value = ui.sample_raster(selected, lat, lon, mask_values=mask_values, scale=scale)
+    value = ui.sample_raster(
+        selected, lat, lon, mask_values=mask_values, scale=scale, band_index=band_index
+    )
     if value is None:
         reading, note = "—", "Point is outside the raster."
     elif math.isnan(value):
         reading, note = "NaN", "No value here — nodata or permanent water (999)."
-    else:
+    elif kind == "Water depth" or kind == "Water level":
         reading, note = f"{value:.2f} m", "Value read from the full-resolution GeoTIFF."
+    elif band_index == ui.GHSL_DEPTH_BANDS["Relative damage"]:
+        reading, note = f"{value:.2f}", "Relative damage fraction (0-1); value read from the full-resolution GeoTIFF."
+    else:
+        reading, note = f"{value:.0f}", "GHSL class code; value read from the full-resolution GeoTIFF."
     probe_col, coord_col = st.columns([1, 3])
     probe_col.metric(kind, reading)
     coord_col.caption(f"at {lat:.5f}, {lon:.5f} — {note}")
@@ -360,7 +426,7 @@ else:
         st.rerun()
 
 st.pyplot(
-    ui.colorbar_figure(overlay.vmin, overlay.vmax, "Blues", label),
+    ui.colorbar_figure(overlay.vmin, overlay.vmax, cmap, label),
     use_container_width=False,
 )
 st.caption(

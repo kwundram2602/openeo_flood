@@ -1,6 +1,6 @@
 """Unified pipeline configuration: dataclasses, YAML I/O and validation.
 
-The config file has one section per pipeline step (``dem``, ``gfm``, ``flexth``)
+The config file has one section per pipeline step (``dem``, ``gfm``, ``flexth``, ``ghsl``)
 plus shared ``project`` and ``aoi`` sections. All paths in the file are
 interpreted relative to the directory containing the YAML file, so the config
 stays portable across machines.
@@ -136,6 +136,17 @@ class GfmConfig:
 
 
 @dataclass
+class GhslConfig:
+    """GHSL settlement characteristics extraction via Google Earth Engine."""
+
+    enabled: bool = True
+    asset: str = "JRC/GHSL/P2023A/GHS_BUILT_C/2018"
+    band: str = "built_characteristics"
+    scale: int = 10
+    crs: str = "EPSG:4326"
+
+
+@dataclass
 class PipelineConfig:
     """The full unified config plus the location it was loaded from."""
 
@@ -144,6 +155,7 @@ class PipelineConfig:
     dem: DemConfig
     gfm: GfmConfig
     flexth: dict
+    ghsl: GhslConfig
     source_path: Path
 
     def resolve(self, relative: str | Path) -> Path:
@@ -251,17 +263,28 @@ class PipelineConfig:
         """Raster of pixels FLEXTH flooded beyond the raw GFM extent (overlay)."""
         return self.scene_output_dir(band, stamp) / GFM_FILL_NAME
 
+    def scene_ghsl_depth_path(self, stamp: str) -> Path:
+        """Path to the per-scene combined GHSL + water depth raster."""
+        return self.output_dir / f"ghsl_depth_{stamp}.tif"
+
+    def scene_fill_path(self, band: str, stamp: str) -> Path:
+        """Raster of pixels FLEXTH flooded beyond the raw GFM extent (overlay)."""
+        return self.scene_output_dir(band, stamp) / GFM_FILL_NAME
+
     def gfm_output_bands(self) -> list[str]:
         """Band keys that have at least one scene output folder on disk."""
         if not self.output_dir.exists():
             return []
-        return sorted(
-            p.name
-            for p in self.output_dir.iterdir()
-            if p.is_dir()
-            and any(s.is_dir() and SCENE_DIR_RE.match(s.name) for s in p.iterdir())
-        )
+        scenes = [
+            p
+            for p in self.data_dir.glob(GFM_SCENE_NAME)
+            if GFM_SCENE_STAMP_RE.search(p.name)
+        ]
+        return sorted(scenes, key=lambda p: p.name)
 
+    def ghsl_path(self) -> Path:
+        """Path to the downloaded base GHSL raster for the AOI."""
+        return self.data_dir / "ghsl_built.tif"
 
 def vector_path(raster: Path) -> Path:
     """The flood-area polygon file belonging to a flood raster.
@@ -322,6 +345,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         dem=_section_to_dataclass(DemConfig, raw, "dem"),
         gfm=gfm,
         flexth=raw.get("flexth") or {},
+        ghsl=_section_to_dataclass(GhslConfig, raw, "ghsl"),
         source_path=path.resolve(),
     )
 
@@ -334,6 +358,7 @@ def to_dict(cfg: PipelineConfig) -> dict:
         "dem": dataclasses.asdict(cfg.dem),
         "gfm": dataclasses.asdict(cfg.gfm),
         "flexth": cfg.flexth,
+        "ghsl": dataclasses.asdict(cfg.ghsl),
     }
 
 
@@ -374,6 +399,8 @@ def validate(cfg: PipelineConfig) -> list[str]:
         )
     if cfg.dem.enabled and not cfg.project.gee_project:
         errors.append("project.gee_project must be set when the dem step is enabled")
+    if cfg.ghsl.enabled and cfg.ghsl.scale <= 0:
+        errors.append("ghsl.scale must be greater than 0")
     if cfg.gfm.aggregation not in GFM_AGGREGATIONS:
         errors.append(
             f"gfm.aggregation must be one of {GFM_AGGREGATIONS}, got {cfg.gfm.aggregation!r}"

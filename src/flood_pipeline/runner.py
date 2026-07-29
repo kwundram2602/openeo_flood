@@ -1,4 +1,4 @@
-"""Pipeline orchestration: run the dem/gfm/flexth steps in order.
+"""Pipeline orchestration: run the dem/gfm/flexth/ghsl steps in order.
 
 The runner prints ``##[step:<name>] start|done|failed|skipped`` and
 ``##[pipeline] ...`` marker lines through the supplied logger. The dashboard's
@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from flood_pipeline.config import PipelineConfig, validate
 from flood_pipeline.steps import LogFn, StepOutcome
 
-STEP_ORDER = ("dem", "gfm", "flexth")
+STEP_ORDER = ("dem", "gfm", "flexth", "ghsl")
 
 
 class UnknownStepError(ValueError):
@@ -37,16 +37,20 @@ def normalize_steps(steps: Sequence[str]) -> list[str]:
 def _step_runner(step: str):
     """Import the step module on first use; ee/geemap/odc imports are slow."""
     if step == "dem":
-        from flood_pipeline.steps import dem
+        import flood_pipeline.steps.dem as dem
 
         return dem.run
     if step == "gfm":
-        from flood_pipeline.steps import gfm
+        import flood_pipeline.steps.gfm as gfm
 
         return gfm.run
-    from flood_pipeline.steps import flexth_step
+    if step == "flexth":
+        import flood_pipeline.steps.flexth_step as flexth_step
 
-    return flexth_step.run
+        return flexth_step.run
+    import flood_pipeline.steps.ghsl_step as ghsl_step
+
+    return ghsl_step.run
 
 
 def _step_enabled(cfg: PipelineConfig, step: str) -> bool:
@@ -54,7 +58,11 @@ def _step_enabled(cfg: PipelineConfig, step: str) -> bool:
         return cfg.dem.enabled
     if step == "gfm":
         return cfg.gfm.enabled
-    return bool(cfg.flexth.get("enabled", True))
+    if step == "flexth":
+        return bool(cfg.flexth.get("enabled", True))
+    if step == "ghsl":
+        return cfg.ghsl.enabled
+    return True
 
 
 def run_pipeline(
