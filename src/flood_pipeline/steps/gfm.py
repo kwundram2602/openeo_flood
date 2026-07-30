@@ -1,9 +1,8 @@
 """GFM flood-extent step: ensemble flood extent from the EODC STAC catalog.
 
-One raster is written per acquisition timestamp (cube time-slice); FLEXTH then
-consumes each per-scene mask. The whole-time maximum is always written too (as a
-reference/overlay) and the temporal sum is optional (``gfm.aggregation: sum`` or
-``both``).
+One raster is written per acquisition timestamp (cube time-slice);
+FLEXTH then consumes each per-scene mask.
+The whole-time maximum is always written too (overall flood extent)
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ import odc.stac
 import pandas as pd
 import pystac  # just using for return type hint; no STAC operations here
 import pystac_client  # open stac catalog and search for items
-import rioxarray  # noqa: F401  (registers the .rio accessor used by _write_geotiff)
+import rioxarray  # noqa: F401  
 import xarray as xr
 
 from flood_pipeline import polygonize
@@ -55,10 +54,7 @@ def search_gfm_items(
 ) -> pystac.ItemCollection:
     """Search the STAC catalog for *all* GFM items covering bbox and time range.
 
-    No ``max_items`` cap here: the EODC API returns items newest-first, so a cap
-    would silently drop the *oldest* acquisitions in the window (see
-    :func:`_cap_items` for an opt-in, warned cap). Standalone so the dashboard
-    scene browser can reuse it (public API, no authentication).
+    No ``max_items``
     """
     catalog = pystac_client.Client.open(stac_url)
     search = catalog.search(
@@ -121,9 +117,6 @@ def _binarize_likelihood(cube: xr.DataArray, threshold: int) -> xr.DataArray:
 
 def _has_flood(scene: xr.DataArray) -> bool:
     """True if the scene has any flood pixel (value > 0) over the AOI.
-
-    Empty scenes (all nodata/NaN or all-zero) come from overpass frames that do
-    not cover the AOI or saw no flood; FLEXTH would produce an empty depth map.
     """
     return bool((scene > 0).any())
 
