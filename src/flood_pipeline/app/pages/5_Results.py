@@ -8,9 +8,12 @@ WL_*.tif is float32 meters; 0 is nodata and 999 marks permanent water — both
 are masked out.
 """
 
+import json
 import math
+from pathlib import Path
 
 import folium
+import geopandas as gpd
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -23,6 +26,65 @@ st.set_page_config(page_title="Results", page_icon="🌊", layout="wide")
 st.title("Results")
 
 WHOLE_AOI = "— whole AOI —"  # the flood-area selectbox entry that resets the view
+METERS_PER_KM = 1000.0
+
+
+def _load_gdf(path: Path, layer: str) -> gpd.GeoDataFrame | None:
+    if not path.exists():
+        return None
+    return gpd.read_file(path, layer=layer)
+
+
+def _length_km(gdf: gpd.GeoDataFrame | None) -> float:
+    if gdf is None or gdf.empty:
+        return 0.0
+    if "length_m" in gdf.columns:
+        return float(gdf["length_m"].sum() / METERS_PER_KM)
+    metric = gdf.to_crs(gdf.estimate_utm_crs() or "EPSG:3857")
+    return float(metric.geometry.length.sum() / METERS_PER_KM)
+
+
+def _summary_from_layers(
+    roads: gpd.GeoDataFrame | None,
+    railways: gpd.GeoDataFrame | None,
+    flooded_roads: gpd.GeoDataFrame | None,
+    flooded_railways: gpd.GeoDataFrame | None,
+) -> dict[str, float]:
+    return {
+        "roads_total_km": _length_km(roads),
+        "roads_flooded_km": _length_km(flooded_roads),
+        "railways_total_km": _length_km(railways),
+        "railways_flooded_km": _length_km(flooded_railways),
+    }
+
+
+def _load_summary(path: Path) -> dict[str, float] | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _add_line_layer(
+    parent: folium.Map | folium.FeatureGroup,
+    gdf: gpd.GeoDataFrame | None,
+    *,
+    name: str,
+    color: str,
+    weight: int,
+    opacity: float,
+) -> None:
+    if gdf is None or gdf.empty:
+        return
+    folium.GeoJson(
+        gdf.to_crs(epsg=4326).__geo_interface__,
+        name=name,
+        style_function=lambda _feature, color=color, weight=weight, opacity=opacity: {
+            "color": color,
+            "weight": weight,
+            "opacity": opacity,
+            "fill": False,
+        },
+    ).add_to(parent)
 
 try:
     cfg = ui.pipeline_cfg()
@@ -113,6 +175,29 @@ likelihood_range = st.slider(
     help="Narrow the range (e.g. 10–50) to bring out low probabilities.",
 )
 
+infra_stamp = "max" if use_max else stamp
+osm_roads_path = cfg.osm_scene_roads_path(band, infra_stamp)
+osm_railways_path = cfg.osm_scene_railways_path(band, infra_stamp)
+osm_flooded_roads_path = cfg.osm_scene_flooded_roads_path(band, infra_stamp)
+osm_flooded_railways_path = cfg.osm_scene_flooded_railways_path(band, infra_stamp)
+osm_summary_path = cfg.osm_scene_summary_path(band, infra_stamp)
+
+show_roads = st.checkbox(
+    "Overlay roads (grey)",
+    value=False,
+    disabled=not osm_roads_path.exists(),
+)
+show_railways = st.checkbox(
+    "Overlay railways (teal)",
+    value=False,
+    disabled=not osm_railways_path.exists(),
+)
+show_flooded_infra = st.checkbox(
+    "Overlay flooded infrastructure (red/orange)",
+    value=True,
+    disabled=not osm_flooded_roads_path.exists() and not osm_flooded_railways_path.exists(),
+)
+
 gfm_path = cfg.gfm_mask_path(band) if use_max else cfg.gfm_scene_path(band, stamp)
 areas = ui.flood_areas(vector_path(gfm_path))
 selected_area_id = None
@@ -171,6 +256,39 @@ if population_path.exists() and wanted == "WD":
         st.warning(f"Could not calculate population exposure: {e}")
 elif not population_path.exists():
     st.info("Run the population step to add WorldPop exposure statistics.")
+
+roads_layer = _load_gdf(osm_roads_path, "roads") if show_roads else None
+railways_layer = _load_gdf(osm_railways_path, "railways") if show_railways else None
+flooded_roads_layer = (
+    _load_gdf(osm_flooded_roads_path, "roads_flooded") if show_flooded_infra else None
+)
+flooded_railways_layer = (
+    _load_gdf(osm_flooded_railways_path, "railways_flooded") if show_flooded_infra else None
+)
+
+osm_summary = _load_summary(osm_summary_path)
+if osm_summary is None and any(
+    layer is not None for layer in [roads_layer, railways_layer, flooded_roads_layer, flooded_railways_layer]
+):
+    osm_summary = _summary_from_layers(
+        roads_layer,
+        railways_layer,
+        flooded_roads_layer,
+        flooded_railways_layer,
+    )
+
+if osm_summary is not None:
+    st.subheader("Infrastructure impact")
+    infra1, infra2, infra3, infra4 = st.columns(4)
+    infra1.metric("Roads total", f"{osm_summary['roads_total_km']:.1f} km")
+    infra2.metric("Roads flooded", f"{osm_summary['roads_flooded_km']:.1f} km")
+    infra3.metric("Railways total", f"{osm_summary['railways_total_km']:.1f} km")
+    infra4.metric("Railways flooded", f"{osm_summary['railways_flooded_km']:.1f} km")
+    st.caption(
+        "Road and railway lengths are measured in a metric projection and the flooded share is the portion intersecting the GFM flood extent for the selected scene or the whole-time max."
+    )
+elif show_roads or show_railways or show_flooded_infra:
+    st.info("Run the OSM step to add infrastructure layers and flooded km metrics.")
 # Base map holds only the tiles and its fit_bounds, so its rendered string stays
 # identical from rerun to rerun. streamlit-folium then never reloads it and the
 # browser keeps whatever pan/zoom the user set — stepping the slider only swaps
@@ -332,6 +450,44 @@ if show_population and population_path.exists():
         opacity=0.65,
         name="WorldPop 2020 population",
     ).add_to(fmap)
+
+if show_roads:
+    _add_line_layer(
+        overlays,
+        roads_layer,
+        name="roads",
+        color="#666666",
+        weight=2,
+        opacity=0.7,
+    )
+
+if show_railways:
+    _add_line_layer(
+        overlays,
+        railways_layer,
+        name="railways",
+        color="#1b9e77",
+        weight=2,
+        opacity=0.75,
+    )
+
+if show_flooded_infra:
+    _add_line_layer(
+        overlays,
+        flooded_roads_layer,
+        name="flooded roads",
+        color="#e31a1c",
+        weight=4,
+        opacity=0.95,
+    )
+    _add_line_layer(
+        overlays,
+        flooded_railways_layer,
+        name="flooded railways",
+        color="#ff7f00",
+        weight=4,
+        opacity=0.95,
+    )
 
 if cfg.aoi_abs_path.exists():
     ui.add_aoi_layer(overlays, cfg.aoi_abs_path)

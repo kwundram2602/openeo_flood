@@ -152,6 +152,25 @@ with st.form("gfm_form"):
             )
             _saved("gfm")
 
+# --- osm ----------------------------------------------------------------------
+
+osm = cfg_dict.setdefault("osm", {})
+with st.form("osm_form"):
+    st.subheader("Infrastructure impact (OSMnx)")
+    osm_enabled = st.checkbox(
+        "Enabled",
+        value=osm.get("enabled", False),
+        help="Download roads and railways inside the AOI, intersect them with the GFM flood mask, and save flooded lengths in km.",
+    )
+    st.caption(
+        "This step reads the AOI, queries OpenStreetMap through OSMnx, and writes per-scene vector layers for roads and railways plus flooded segments."
+    )
+    if st.form_submit_button("Save osm"):
+        osm["enabled"] = osm_enabled
+        _saved("osm")
+
+##
+
 # --- population ---------------------------------------------------------------
 population = cfg_dict.setdefault("population", {})
 with st.form("population_form"):

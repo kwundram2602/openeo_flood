@@ -38,6 +38,7 @@ if errors:
 enabled_by_step = {
     "dem": cfg.dem.enabled,
     "gfm": cfg.gfm.enabled,
+    "osm": cfg.osm.enabled,
     "flexth": bool(cfg.flexth.get("enabled", True)),
     "population": cfg.population.enabled,
 }
