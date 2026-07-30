@@ -7,7 +7,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
-import rioxarray  # noqa: F401  (registers the .rio accessor)
+import rioxarray
 import xarray as xr
 import yaml
 
@@ -227,7 +227,7 @@ class _Item:
 
 def test_cap_items_keeps_newest_and_warns() -> None:
     items = [
-        _Item(dt.datetime(2024, 9, d, tzinfo=dt.timezone.utc)) for d in (3, 10, 20)
+        _Item(dt.datetime(2024, 9, d, tzinfo=dt.UTC)) for d in (3, 10, 20)
     ]
     logs: list[str] = []
     kept = gfm._cap_items(items, 2, logs.append)
@@ -236,7 +236,7 @@ def test_cap_items_keeps_newest_and_warns() -> None:
 
 
 def test_cap_items_unlimited_returns_all() -> None:
-    items = [_Item(dt.datetime(2024, 9, 3, tzinfo=dt.timezone.utc))]
+    items = [_Item(dt.datetime(2024, 9, 3, tzinfo=dt.UTC))]
     logs: list[str] = []
     assert gfm._cap_items(items, 0, logs.append) == items
     assert logs == []  # no truncation warning

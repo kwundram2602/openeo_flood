@@ -10,16 +10,16 @@ from __future__ import annotations
 
 import datetime as dt
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import odc.stac
-import odc.stac # used to create a (time, y, x) cube from the GFM STAC items
 import pandas as pd
-import pystac # just using for return type hint; no STAC operations here
-import pystac_client # open stac catalog and search for items
-import rioxarray
+import pystac  # just using for return type hint; no STAC operations here
+import pystac_client  # open stac catalog and search for items
+import rioxarray  # noqa: F401  (registers the .rio accessor used by _write_geotiff)
 import xarray as xr
 
 from flood_pipeline import polygonize
@@ -27,7 +27,6 @@ from flood_pipeline.config import (
     SCENE_STAMP_FORMAT,
     PipelineConfig,
     is_likelihood_band,
-    vector_path,
 )
 from flood_pipeline.steps import LogFn, StepOutcome
 
@@ -71,7 +70,7 @@ def search_gfm_items(
 
 
 def load_flood_cube(
-    items: pystac.ItemCollection,
+    items: Iterable[pystac.Item],
     bbox: tuple[float, float, float, float],
     *,
     band: str,
@@ -93,7 +92,7 @@ def load_flood_cube(
     return flood.where(flood != GFM_NODATA)
 
 
-def _cap_items(items, max_items: int, log: LogFn) -> list:
+def _cap_items(items, max_items: int, log: LogFn) -> list[pystac.Item]:
     """Return items, optionally capped to the newest ``max_items`` (0 = no cap).
 
     The cap is a safety valve, not the default: when it truncates, it warns and
@@ -104,7 +103,7 @@ def _cap_items(items, max_items: int, log: LogFn) -> list:
         return items
     ordered = sorted(
         items,
-        key=lambda it: it.datetime or dt.datetime.min.replace(tzinfo=dt.timezone.utc),
+        key=lambda it: it.datetime or dt.datetime.min.replace(tzinfo=dt.UTC),
         reverse=True,
     )
     log(
@@ -158,25 +157,13 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
 
     outputs: list[Path] = []
     flood_pixels = 0
-    for key, band_name in cfg.resolved_bands():
-        log(f"== band {key} ({band_name}): loading {len(items)} items ...")
-        band_outputs, band_pixels = _run_band(cfg, items, bbox, key, band_name, log)
-        outputs.extend(band_outputs)
-        flood_pixels += band_pixels
-    if flood_pixels == 0:
-        # Only when no band detected anything: with compare_algorithms a single
-        # empty algorithm is a real result, not a broken run.
-        raise RuntimeError(
-            "GFM returned scenes, but the flood extent is zero throughout the AOI "
-            "and date range. FLEXTH cannot estimate water depth without flood "
-            "pixels. Check the GFM raster/scene browser, use a known flooded AOI "
-            "or another date range; increasing max_items alone does not create "
-            "detections."
     failed_bands: list[str] = []
     for key, band_name in cfg.resolved_bands():
         log(f"== band {key} ({band_name}): loading {len(items)} items ...")
         try:
-            outputs.extend(_run_band(cfg, items, bbox, key, band_name, log))
+            band_outputs, band_pixels = _run_band(
+                cfg, items, bbox, key, band_name, log
+            )
         except Exception as e:
             # In compare-mode, one algorithm can have broken/missing remote
             # assets while others are still readable; keep the successful bands.
@@ -185,6 +172,8 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
                 log(f"WARNING: skipped band {key} ({band_name}) due to read failure: {e}")
                 continue
             raise
+        outputs.extend(band_outputs)
+        flood_pixels += band_pixels
 
     if failed_bands:
         succeeded = [k for k, _ in cfg.resolved_bands() if k not in failed_bands]
@@ -196,12 +185,23 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
             "WARNING: finished with partial bands; failed "
             f"{failed_bands}, succeeded {succeeded}"
         )
+
+    if flood_pixels == 0:
+        # Only when no band detected anything: with compare_algorithms a single
+        # empty algorithm is a real result, not a broken run.
+        raise RuntimeError(
+            "GFM returned scenes, but the flood extent is zero throughout the AOI "
+            "and date range. FLEXTH cannot estimate water depth without flood "
+            "pixels. Check the GFM raster/scene browser, use a known flooded AOI "
+            "or another date range; increasing max_items alone does not create "
+            "detections."
+        )
     return StepOutcome(outputs=outputs)
 
 
 def _run_band(
     cfg: PipelineConfig,
-    items: pystac.ItemCollection,
+    items: Iterable[pystac.Item],
     bbox: tuple[float, float, float, float],
     key: str,
     band_name: str,
@@ -224,28 +224,9 @@ def _run_band(
         items, bbox, band=GFM_EXCLUSION_BAND, resolution=cfg.gfm.resolution
     )
     cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
-    cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
-
-    flood_max = flood.max(dim="time")
-    outputs = [_write_geotiff(flood_max, cfg.gfm_mask_path(key), log)]
-    flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
-    log(f"detected flood pixels in temporal maximum: {flood_pixel_count}")
-    if flood_pixel_count == 0:
-        raise RuntimeError(
-            "GFM returned scenes, but ensemble_flood_extent is zero throughout "
-            "the AOI and date range. FLEXTH cannot estimate water depth without "
-            "flood pixels. Check the GFM raster/scene browser, use a known flooded "
-            "AOI or another date range; increasing max_items alone does not create "
-            "detections."
-        )
-    # Clear only this band's scene rasters from a previous run so the on-disk
-    # set matches this run. In compare-mode, clearing all bands here would
-    # delete scenes written by earlier bands in the same run.
-    for stale in cfg.gfm_scene_paths(key):
-        stale.unlink()
-        vector_path(stale).unlink(missing_ok=True)
-        
+    # Clear only this band's scenes from a previous run so the on-disk set
+    # matches this run. In compare-mode, clearing all bands here would delete
+    # scenes written by earlier bands in the same run.
     _clear_band_scene_dirs(cfg, key)
 
     outputs: list[Path] = []

@@ -276,9 +276,6 @@ class PipelineConfig:
         """The WorldPop raster used for exposure calculations."""
         return self.data_dir / self.population.out_name
 
-    def scene_work_root(self, band: str) -> Path:
-        """FLEXTH work root for a band (holds one subfolder per scene)."""
-        return self.work_dir / band
     def osm_root(self) -> Path:
         """OSM source and per-scene flood-impact outputs."""
         return self.data_dir / "osm"
@@ -311,10 +308,6 @@ class PipelineConfig:
 
     def osm_scene_flooded_railways_path(self, band: str, stamp: str) -> Path:
         return self.osm_scene_dir(band, stamp) / "railways_flooded.gpkg"
-
-    def scene_work_dir(self, stamp: str) -> Path:
-        """FLEXTH work dir for one scene (own flood.tif/dtm.tif)."""
-        return self.work_dir / stamp
 
     def scene_output_root(self, band: str) -> Path:
         """FLEXTH output root for a band (holds one subfolder per scene)."""

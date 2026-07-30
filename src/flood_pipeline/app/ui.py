@@ -29,7 +29,7 @@ OVERLAY_OPACITY = 0.85
 CMAP_FLOOR = 0.25  # where the lowest displayed value lands in the colormap
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def display_colormap(cmap: str) -> matplotlib.colors.Colormap:
     """``cmap`` without its washed-out low end, for both overlay and legend.
 
@@ -126,6 +126,20 @@ def pipeline_cfg() -> PipelineConfig:
     """Typed view of the config *as saved on disk* (for paths and validation)."""
     _, cfg_path = get_cfg()
     return load_config(cfg_path)
+
+
+def configured_output_bands(cfg: PipelineConfig) -> list[str]:
+    """Bands with outputs on disk that the *current* config actually produces.
+
+    :meth:`PipelineConfig.gfm_output_bands` reports every band folder present,
+    which still includes the leftovers of earlier runs with different ``gfm``
+    settings — a different date range, and no OSM outputs at all (the osm step
+    only writes for :meth:`PipelineConfig.resolved_bands`). The results page
+    must neither offer nor load those, so filter them out here. Order follows
+    ``resolved_bands`` so the picker opens on the run's primary band.
+    """
+    on_disk = set(cfg.gfm_output_bands())
+    return [key for key, _band_name in cfg.resolved_bands() if key in on_disk]
 
 
 def aoi_outline(aoi_path: Path) -> gpd.GeoDataFrame:

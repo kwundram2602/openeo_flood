@@ -92,11 +92,16 @@ except ConfigError as e:
     st.error(str(e))
     st.stop()
 
-bands = cfg.gfm_output_bands()
+# Only the band(s) this config produces: folders from earlier runs with other
+# gfm settings stay on disk but must not be offered or loaded here.
+bands = ui.configured_output_bands(cfg)
 if not bands:
+    stale = [b for b in cfg.gfm_output_bands() if b not in dict(cfg.resolved_bands())]
     st.info(
-        f"No per-scene WD_/WL_ rasters under `{cfg.output_dir}` yet — run the "
-        "pipeline first (Run page)."
+        f"No per-scene WD_/WL_ rasters under `{cfg.output_dir}` for the "
+        f"configured band(s) {', '.join(key for key, _ in cfg.resolved_bands())} "
+        "— run the pipeline first (Run page)."
+        + (f" Folders from earlier runs ({', '.join(stale)}) are ignored." if stale else "")
     )
     st.stop()
 band = (
@@ -181,6 +186,12 @@ osm_railways_path = cfg.osm_scene_railways_path(band, infra_stamp)
 osm_flooded_roads_path = cfg.osm_scene_flooded_roads_path(band, infra_stamp)
 osm_flooded_railways_path = cfg.osm_scene_flooded_railways_path(band, infra_stamp)
 osm_summary_path = cfg.osm_scene_summary_path(band, infra_stamp)
+
+if cfg.osm.enabled and not osm_roads_path.exists():
+    st.caption(
+        f"No OSM infrastructure for `{band}` / {_label(infra_stamp)} — "
+        "run the osm step for this band (Run page) to enable the overlays."
+    )
 
 show_roads = st.checkbox(
     "Overlay roads (grey)",

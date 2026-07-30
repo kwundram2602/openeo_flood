@@ -153,6 +153,63 @@ def test_gfm_output_bands_from_disk(tmp_path: Path) -> None:
     assert cfg.gfm_output_bands() == ["dlr", "ensemble"]
 
 
+def _project_with_band_dirs(tmp_path: Path, *bands: str):
+    """A copy of the demo project with per-band FLEXTH output folders on disk."""
+    import shutil
+
+    from flood_pipeline.config import load_config as _load
+
+    project = tmp_path / "p"
+    project.mkdir()
+    (project / "config.yaml").write_text(
+        DEMO_CONFIG.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    shutil.copy(DEMO_CONFIG.parent / "aoi_drawn.geojson", project / "aoi_drawn.geojson")
+    cfg = _load(project / "config.yaml")
+    for band in bands:
+        (cfg.output_dir / band / "2024-09-16_051230").mkdir(parents=True)
+    return cfg
+
+
+def test_band_picker_hides_folders_from_earlier_runs(tmp_path: Path) -> None:
+    """Only the configured band is offered, so nothing stale can be loaded.
+
+    Switching gfm.compare_algorithms true->false leaves the old per-algorithm
+    folders on disk. They cover a different date range and have no OSM outputs
+    (the osm step only writes for cfg.resolved_bands()).
+    """
+    from flood_pipeline.app import ui
+
+    cfg = _project_with_band_dirs(
+        tmp_path, "dlr", "ensemble", "ensemble_likelihood", "list", "tuw"
+    )
+    cfg.gfm.compare_algorithms = False
+    cfg.gfm.band = "ensemble_likelihood"
+    assert cfg.gfm_output_bands() == ["dlr", "ensemble", "ensemble_likelihood", "list", "tuw"]
+    assert ui.configured_output_bands(cfg) == ["ensemble_likelihood"]
+
+
+def test_band_picker_lists_every_algorithm_when_comparing(tmp_path: Path) -> None:
+    """compare_algorithms offers the four algorithm bands, still not the leftovers."""
+    from flood_pipeline.app import ui
+
+    cfg = _project_with_band_dirs(
+        tmp_path, "dlr", "ensemble", "ensemble_likelihood", "list", "tuw"
+    )
+    cfg.gfm.compare_algorithms = True
+    assert ui.configured_output_bands(cfg) == ["ensemble", "dlr", "tuw", "list"]
+
+
+def test_band_picker_omits_a_configured_band_without_outputs(tmp_path: Path) -> None:
+    """A configured band that never ran must not be offered as selectable."""
+    from flood_pipeline.app import ui
+
+    cfg = _project_with_band_dirs(tmp_path, "dlr")
+    cfg.gfm.compare_algorithms = False
+    cfg.gfm.band = "ensemble_likelihood"
+    assert ui.configured_output_bands(cfg) == []
+
+
 def test_flood_area_label_shows_rank_and_size() -> None:
     from flood_pipeline.app import ui
 

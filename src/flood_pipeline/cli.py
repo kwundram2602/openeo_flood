@@ -70,8 +70,10 @@ def scenes_cmd(config_path: str, start: str | None, end: str | None, max_items: 
         extent,
         stac_url=cfg.gfm.stac_url,
         collection=cfg.gfm.collection,
-        max_items=max_items,
     )
+    # The search itself is uncapped (it returns newest-first, so capping there
+    # would drop the oldest scenes silently); apply --max-items here instead.
+    items = gfm._cap_items(items, max_items, click.echo)
     bounds = tuple(round(float(value), 5) for value in bbox)
     if len(items) == 0:
         click.echo(f"No {cfg.gfm.collection} items for bbox {bounds} in {extent}.")

@@ -5,8 +5,8 @@ folder and becomes ``aoi.path`` (GeoJSON instead of GPKG: human-readable and
 no sqlite write locks on Windows).
 """
 
-import geopandas as gpd
 import folium
+import geopandas as gpd
 import streamlit as st
 from folium.plugins import Draw
 from streamlit_folium import st_folium
