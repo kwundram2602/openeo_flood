@@ -1,11 +1,9 @@
 """Unified pipeline configuration: dataclasses, YAML I/O and validation.
 
 The config file has one section per pipeline step (``dem``, ``gfm``, ``osm``,
-``flexth``) plus shared ``project`` and ``aoi`` sections.
-The config file has one section per pipeline step (``dem``, ``gfm``, ``flexth``, ``ghsl``)
-plus shared ``project`` and ``aoi`` sections. All paths in the file are
-interpreted relative to the directory containing the YAML file, so the config
-stays portable across machines.
+``flexth``, ``population``, ``ghsl``) plus shared ``project`` and ``aoi``
+sections. All paths in the file are interpreted relative to the directory
+containing the YAML file, so the config stays portable across machines.
 
 The ``flexth`` section is a raw dict passthrough: it is copied into
 the generated FLEXTH config
@@ -136,6 +134,14 @@ class GfmConfig:
     compare_algorithms: bool = False  # run all four algorithm bands, not just `band`
     likelihood_threshold: int = 25  # percent; only used for a *_likelihood band
 
+
+@dataclass
+class OsmConfig:
+    """OSM infrastructure extraction and flood-impact summary."""
+
+    enabled: bool = False
+
+
 @dataclass
 class PopulationConfig:
     """WorldPop exposure-layer retrieval via Google Earth Engine."""
@@ -149,24 +155,6 @@ class PopulationConfig:
     out_name: str = "worldpop_2020.tif"
     overwrite: bool = False
 
-@dataclass
-class GhslConfig:
-    """GHSL Built-Up extraction via Google Earth Engine."""
-
-    enabled: bool = True
-    asset: str = "JRC/GHSL/P2023A/GHS_BUILT_C/2018"
-    band: str = "built_characteristics"
-    scale: int = 10
-    crs: str = "EPSG:4326"
-    out_name: str = "ghsl_built_c.tif"
-
-@dataclass
-class OsmConfig:
-    """OSM infrastructure extraction and flood-impact summary."""
-
-    enabled: bool = False
-
-
 
 @dataclass
 class GhslConfig:
@@ -177,6 +165,7 @@ class GhslConfig:
     band: str = "built_characteristics"
     scale: int = 10
     crs: str = "EPSG:4326"
+    out_name: str = "ghsl_built_c.tif"
 
 
 @dataclass
@@ -299,6 +288,18 @@ class PipelineConfig:
                     paths.append(scene_path)
         return paths
 
+    def gfm_output_bands(self) -> list[str]:
+        """Band keys that have at least one scene output folder on disk.
+
+        Scans for ``<data_dir>/<band>/<stamp>/gfm_flood.tif`` two levels
+        down, since that's where ``gfm_scene_path`` actually writes them.
+        """
+        if not self.data_dir.exists():
+            return []
+        scene_files = self.data_dir.glob(f"*/*/{GFM_SCENE_NAME}")
+        bands = {p.parents[1].name for p in scene_files}
+        return sorted(bands)
+
     def population_path(self) -> Path:
         """The WorldPop raster used for exposure calculations."""
         return self.data_dir / self.population.out_name
@@ -306,6 +307,7 @@ class PipelineConfig:
     def scene_work_root(self, band: str) -> Path:
         """FLEXTH work root for a band (holds one subfolder per scene)."""
         return self.work_dir / band
+
     def osm_root(self) -> Path:
         """OSM source and per-scene flood-impact outputs."""
         return self.data_dir / "osm"
@@ -343,10 +345,6 @@ class PipelineConfig:
         """FLEXTH output root for a band (holds one subfolder per scene)."""
         return self.output_dir / band
 
-    def scene_work_root(self, band: str) -> Path:
-        """FLEXTH work root for a band (holds one subfolder per scene)."""
-        return self.work_dir / band
-
     def scene_work_dir(self, band: str, stamp: str) -> Path:
         """FLEXTH work dir for one band/scene (own flood.tif/dtm.tif)."""
         return self.scene_work_root(band) / stamp
@@ -363,20 +361,6 @@ class PipelineConfig:
         """Raster of pixels FLEXTH flooded beyond the raw GFM extent (overlay)."""
         return self.scene_output_dir(band, stamp) / GFM_FILL_NAME
 
-    def gfm_output_bands(self) -> list[str]:
-        """Band keys that have at least one scene output folder on disk."""
-        if not self.output_dir.exists():
-            return []
-        scenes = [
-            p
-            for p in self.data_dir.glob(GFM_SCENE_NAME)
-            if GFM_SCENE_STAMP_RE.search(p.name)
-        ]
-        return sorted(scenes, key=lambda p: p.name)
-
-    def ghsl_path(self) -> Path:
-        """Path to the downloaded base GHSL raster for the AOI."""
-        return self.data_dir / "ghsl_built.tif"
 
 def vector_path(raster: Path) -> Path:
     """The flood-area polygon file belonging to a flood raster.
@@ -493,9 +477,13 @@ def validate(cfg: PipelineConfig) -> list[str]:
         errors.append(
             f"dem.delivery must be one of {DEM_DELIVERY_MODES}, got {cfg.dem.delivery!r}"
         )
-    if (cfg.dem.enabled or cfg.population.enabled) and not cfg.project.gee_project:
+    if (
+        (cfg.dem.enabled or cfg.population.enabled or cfg.ghsl.enabled)
+        and not cfg.project.gee_project
+    ):
         errors.append(
-            "project.gee_project must be set when the dem or population step is enabled"
+            "project.gee_project must be set when the dem, population, or ghsl "
+            "step is enabled"
         )
     if cfg.population.year != 2020:
         errors.append(

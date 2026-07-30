@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from flood_pipeline.config import PipelineConfig, validate
 from flood_pipeline.steps import LogFn, StepOutcome
 
-STEP_ORDER = ["dem", "gfm", "flexth", "population", "ghsl"]
+STEP_ORDER = ["dem", "gfm", "osm", "flexth", "population", "ghsl"]
 
 class UnknownStepError(ValueError):
     """Raised when a requested step name is not one of STEP_ORDER."""

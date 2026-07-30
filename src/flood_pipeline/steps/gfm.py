@@ -217,11 +217,11 @@ def _run_band(
         items, bbox, band=GFM_EXCLUSION_BAND, resolution=cfg.gfm.resolution
     )
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
-
     cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
 
+    # Check for detections before writing or clearing anything: a doomed
+    # (all-empty) band must not wipe the previous run's scene folders.
     flood_max = flood.max(dim="time")
-    outputs = [_write_geotiff(flood_max, cfg.gfm_mask_path(key), log)]
     flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
     log(f"detected flood pixels in temporal maximum: {flood_pixel_count}")
     if flood_pixel_count == 0:
@@ -233,7 +233,6 @@ def _run_band(
             "detections."
         )
 
-    cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
     # Clear only this band's scenes from a previous run so the on-disk set
     # matches this run. In compare-mode, clearing all bands here would delete
     # scenes written by earlier bands in the same run.
@@ -269,8 +268,6 @@ def _run_band(
             )
 
     log(f"band {key}: wrote {scene_count} scene(s), skipped {skipped} empty")
-    flood_max = flood.max(dim="time")
-    flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
     log(f"band {key}: flood pixels in temporal maximum: {flood_pixel_count}")
     outputs.extend(_write_scene(cfg, flood_max, cfg.gfm_mask_path(key), "max", log))
     if cfg.gfm.aggregation in ("sum", "both"):

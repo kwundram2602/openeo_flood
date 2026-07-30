@@ -16,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import rasterio
 import yaml
 from flexth import resample as flexth_resample
@@ -356,7 +357,7 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
     config_string = json.dumps(config_dict, sort_keys=True, default=str)
     current_hash = hashlib.md5(config_string.encode()).hexdigest()
 
-    hash_file_path = Path(cfg.project.work_dir) / ".flexth_config_hash.json"
+    hash_file_path = cfg.work_dir / ".flexth_config_hash.json"
     hash_file_path.parent.mkdir(parents=True, exist_ok=True)
 
     stale_detected = False

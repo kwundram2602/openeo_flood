@@ -80,3 +80,5 @@ population:
   crs: EPSG:4326
   out_name: worldpop_2020.tif
   overwrite: true
+osm:
+  enabled: true

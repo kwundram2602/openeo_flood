@@ -23,6 +23,7 @@ import yaml
 
 from flood_pipeline.cli import CONFIG_ENV_VAR
 from flood_pipeline.config import FLOOD_AREA_LAYER, PipelineConfig, load_config
+from flood_pipeline.steps.depth_damage_prov import GHSL_TO_DAMAGE_CLASS
 
 DEFAULT_CONFIG_NAME = "config.yaml"
 PROJECTS_DIR_NAME = "projects"
@@ -87,6 +88,30 @@ GHSL_CLASS_LABELS: dict[int, str] = {
     25: "Non-resid. >30m",
 }
 
+# Building GHSL classes: everything depth_damage_prov treats as a building
+# (residential or commercial), i.e. everything that is NOT open space (1-5)
+# or excluded (4, open water). Derived from GHSL_TO_DAMAGE_CLASS rather than
+# hardcoded here, so this can't silently drift out of sync with the damage
+# mapping the GHSL step actually uses.
+BUILDING_GHSL_CLASSES: frozenset[int] = frozenset(
+    class_id
+    for class_id, damage_class in GHSL_TO_DAMAGE_CLASS.items()
+    if damage_class in ("Residential buildings", "Commercial buildings")
+)
+
+# Residential/commercial subsets of the above, for the cost-damage
+# residential-vs-commercial split (mirrors ghsl_step.py's own derivation).
+RESIDENTIAL_GHSL_CLASSES: frozenset[int] = frozenset(
+    class_id
+    for class_id, damage_class in GHSL_TO_DAMAGE_CLASS.items()
+    if damage_class == "Residential buildings"
+)
+COMMERCIAL_GHSL_CLASSES: frozenset[int] = frozenset(
+    class_id
+    for class_id, damage_class in GHSL_TO_DAMAGE_CLASS.items()
+    if damage_class == "Commercial buildings"
+)
+
 # Discrete damage severity classification mapping (JRC/Huizinga fractional damage)
 DAMAGE_BOUNDS: list[float] = [0.0, 0.05, 0.20, 0.50, 0.80, 1.0]
 DAMAGE_COLORS: list[str] = [
@@ -97,11 +122,13 @@ DAMAGE_COLORS: list[str] = [
     "#800026",  # Extreme (> 80%): Deep Dark Red
 ]
 
-# GHSL+Depth+Damage raster band layout (matches ghsl_step._combine_ghsl_and_depth).
-# Values are 0-indexed band_index for ui.raster_overlay()/sample_raster().
+# GHSL+Depth+Damage(+EUR) raster band layout (matches
+# ghsl_step._combine_ghsl_and_depth). Values are 0-indexed band_index for
+# ui.raster_overlay()/sample_raster().
 GHSL_DEPTH_BANDS: dict[str, int] = {
     "GHSL class": 0,       # band 1: GHSL characteristics, discrete classes
     "Relative damage": 2,  # band 3: JRC depth-damage fraction, 0-1
+    "Euro damage": 3,      # band 4: absolute EUR damage, building pixels only
 }
 
 
@@ -445,6 +472,108 @@ def sample_raster(
     if value in mask_values:
         return float("nan")
     return value * scale
+
+
+@dataclass
+class GhslExposure:
+    """Building-pixel counts, average damage and EUR damage for one band/scene.
+
+    Pixel counts, not areas: the GHSL raster's own resolution
+    (``cfg.ghsl.scale``, default 10 m) is the implicit unit. ``ghsl_depth.tif``
+    is written on the exact same grid as the raw GHSL raster (its metadata is
+    copied verbatim in ``_combine_ghsl_and_depth``), so ``buildings_total`` and
+    ``buildings_exposed`` are directly comparable pixel-for-pixel.
+    """
+
+    buildings_total: int
+    buildings_exposed: int
+    avg_relative_damage: float | None  # None when no building pixel is exposed
+    residential_buildings_total: int  # of buildings_total, GHSL classes 11-15
+    commercial_buildings_total: int  # of buildings_total, GHSL classes 21-25
+    residential_eur_damage: float  # sum of Band 4 over residential pixels only
+    commercial_eur_damage: float  # sum of Band 4 over commercial pixels only
+
+    @property
+    def exposed_percent(self) -> float:
+        if self.buildings_total <= 0:
+            return 0.0
+        return 100.0 * self.buildings_exposed / self.buildings_total
+
+    @property
+    def total_eur_damage(self) -> float:
+        return self.residential_eur_damage + self.commercial_eur_damage
+
+
+def ghsl_building_exposure(ghsl_path: Path, ghsl_depth_path: Path) -> GhslExposure:
+    """Building exposure for one band/scene's combined GHSL+Depth+Damage raster."""
+    fields = _build_ghsl_exposure(
+        ghsl_path_str=str(ghsl_path),
+        _ghsl_mtime=ghsl_path.stat().st_mtime,
+        ghsl_depth_path_str=str(ghsl_depth_path),
+        _depth_mtime=ghsl_depth_path.stat().st_mtime,
+    )
+    return GhslExposure(**fields)
+
+
+@st.cache_data(show_spinner="computing GHSL building exposure ...")
+def _build_ghsl_exposure(
+    ghsl_path_str: str,
+    _ghsl_mtime: float,  # cache key only: invalidates when the file changes
+    ghsl_depth_path_str: str,
+    _depth_mtime: float,  # cache key only: invalidates when the file changes
+) -> dict:
+    """Compute the exposure fields as a plain dict."""
+    import rasterio
+
+    with rasterio.open(ghsl_path_str) as src:
+        ghsl_classes = src.read(1)
+    building_classes = np.array(sorted(BUILDING_GHSL_CLASSES))
+    residential_classes = np.array(sorted(RESIDENTIAL_GHSL_CLASSES))
+    commercial_classes = np.array(sorted(COMMERCIAL_GHSL_CLASSES))
+    buildings_total = int(np.isin(ghsl_classes, building_classes).sum())
+    residential_buildings_total = int(np.isin(ghsl_classes, residential_classes).sum())
+    commercial_buildings_total = int(np.isin(ghsl_classes, commercial_classes).sum())
+
+    with rasterio.open(ghsl_depth_path_str) as src:
+        # Band 1: GHSL class, masked to 0 wherever a building isn't also
+        # flooded (ghsl_step._combine_ghsl_and_depth). This footprint also
+        # includes non-building GHSL classes (e.g. roads) that overlap flood
+        # depth, so "exposed" restricts to building classes specifically,
+        # matching how buildings_total is scoped above.
+        combined_class = src.read(1)
+        # Band 3: relative damage fraction (0-1), same footprint as Band 1.
+        damage = src.read(3)
+        band_count = src.count
+        # Band 4 (EUR damage) is only present once max_damage lookup has been
+        # wired into ghsl_step.py; older ghsl_depth.tif files written before
+        # that change only have 3 bands.
+        if band_count >= 4:
+            euro_damage = src.read(4)
+            residential_eur_damage = float(
+                euro_damage[np.isin(combined_class, residential_classes)].sum()
+            )
+            commercial_eur_damage = float(
+                euro_damage[np.isin(combined_class, commercial_classes)].sum()
+            )
+        else:
+            residential_eur_damage = 0.0
+            commercial_eur_damage = 0.0
+
+    exposed_mask = np.isin(combined_class, building_classes)
+    buildings_exposed = int(np.count_nonzero(exposed_mask))
+    avg_relative_damage = (
+        float(damage[exposed_mask].mean()) if buildings_exposed > 0 else None
+    )
+
+    return {
+        "buildings_total": buildings_total,
+        "buildings_exposed": buildings_exposed,
+        "avg_relative_damage": avg_relative_damage,
+        "residential_buildings_total": residential_buildings_total,
+        "commercial_buildings_total": commercial_buildings_total,
+        "residential_eur_damage": residential_eur_damage,
+        "commercial_eur_damage": commercial_eur_damage,
+    }
 
 
 def colorbar_figure(vmin: float, vmax: float, cmap: str, label: str):

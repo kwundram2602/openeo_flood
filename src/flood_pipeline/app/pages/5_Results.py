@@ -170,6 +170,7 @@ else:
     stamp = st.select_slider(
         "Scene",
         options=stamps,
+        value=stamps[-1],
         format_func=_label,
         key=f"scene_slider_{band}"
     )
@@ -182,16 +183,7 @@ kind = st.radio(
     horizontal=True,
     key=f"layer_radio_{band}"
 )
-stamp = st.select_slider("Scene", options=stamps, format_func=_label)
-layer_options = ["Water depth", "Water level"]
-if cfg.ghsl.enabled:
-    layer_options.append("GHSL + Depth")
 
-kind = st.radio("Layer", layer_options, horizontal=True)
-
-if kind == "Water depth":
-    wanted = "WD"
-    selected = scenes[stamp].get(wanted)
 if kind == "Water depth":
     wanted = "WD"
     selected = scenes[stamp].get(wanted)
@@ -219,31 +211,14 @@ else:  # GHSL + Depth
     if ghsl_view == "GHSL class":
         scale, mask_values, label = 1.0, (0.0,), "GHSL settlement class"
         cmap = "GHSL"
-    else:
+    elif ghsl_view == "Relative damage":
         scale, mask_values, label = 1.0, (0.0,), "relative flood damage [fraction]"
         cmap = "Damage"
-
-if selected is None or not selected.exists():
-    st.warning(f"No raster found for layer '{kind}' in scene {_label(stamp)}.")
-    st.stop()
-    cmap = "Blues"
-    band_index = 0
-else:  # GHSL + Depth
-    selected = cfg.scene_ghsl_depth_path(stamp)
-    ghsl_view = st.radio(
-        "GHSL view",
-        list(ui.GHSL_DEPTH_BANDS),
-        horizontal=True,
-        help="GHSL class: settlement type per pixel, from GHSL's built_characteristics "
-        "band. Relative damage: JRC/Huizinga depth-damage fraction (0-1) for this "
-        "AOI's continent, at this scene's flood depth.",
-    )
-    band_index = ui.GHSL_DEPTH_BANDS[ghsl_view]
-    if ghsl_view == "GHSL class":
-        scale, mask_values, label = 1.0, (0.0,), "GHSL settlement class"
-        cmap = "GHSL"
-    else:
-        scale, mask_values, label = 1.0, (0.0,), "relative flood damage [fraction]"
+    else:  # Euro damage
+        # Continuous, unbounded value (unlike the 0-1 Relative damage
+        # fraction), so this uses the default percentile-stretch colormap
+        # rather than the "Damage" categorical bins.
+        scale, mask_values, label = 1.0, (0.0,), "estimated damage [EUR, 2010 prices]"
         cmap = "YlOrRd"
 
 if selected is None or not selected.exists():
@@ -312,7 +287,7 @@ show_railways = st.checkbox(
 )
 show_flooded_infra = st.checkbox(
     "Overlay flooded infrastructure (red/orange)",
-    value=True,
+    value=False,
     disabled=not osm_flooded_roads_path.exists() and not osm_flooded_railways_path.exists(),
 )
 
@@ -354,9 +329,10 @@ col3.metric("max", f"{overlay.valid_max:.2f}")
 col4.metric("valid pixels", f"{overlay.valid_fraction:.1%}")
 st.caption("Statistics exclude nodata values.")
 
-if population_path.exists() and kind == "Water depth":
+wd_path = scenes[stamp].get("WD")
+if population_path.exists() and wd_path is not None and wd_path.exists():
     try:
-        exposure = calculate_exposure(population_path, selected)
+        exposure = calculate_exposure(population_path, wd_path)
         st.subheader("Population exposure")
         exp1, exp2, exp3 = st.columns(3)
         exp1.metric("Population in AOI", f"{exposure.total_population:,.0f}")
@@ -370,6 +346,11 @@ if population_path.exists() and kind == "Water depth":
         st.warning(f"Could not calculate population exposure: {e}")
 elif not population_path.exists():
     st.info("Run the population step to add WorldPop exposure statistics.")
+elif wd_path is None or not wd_path.exists():
+    st.info(
+        f"No water depth (WD) output for scene {_label(stamp)} yet — population "
+        "exposure needs it regardless of which Layer view is selected above."
+    )
 
 roads_layer = _load_gdf(osm_roads_path, "roads") if show_roads else None
 railways_layer = _load_gdf(osm_railways_path, "railways") if show_railways else None
@@ -403,6 +384,52 @@ if osm_summary is not None:
     )
 elif show_roads or show_railways or show_flooded_infra:
     st.info("Run the OSM step to add infrastructure layers and flooded km metrics.")
+
+if cfg.ghsl.enabled:
+    ghsl_path = cfg.ghsl_path()
+    # ghsl_step never writes a "max" scene (it iterates FLEXTH's actual
+    # per-acquisition outputs only), so this always uses the currently
+    # selected scene, unlike the OSM panel's "max" toggle above.
+    ghsl_depth_path = cfg.scene_ghsl_depth_path(band, stamp)
+    if ghsl_path.exists() and ghsl_depth_path.exists():
+        exposure = ui.ghsl_building_exposure(ghsl_path, ghsl_depth_path)
+        st.subheader("Building damage (GHSL)")
+        bcol1, bcol2, bcol3, bcol4 = st.columns(4)
+        bcol1.metric("Buildings in AOI", f"{exposure.buildings_total:,}")
+        bcol2.metric("Buildings exposed", f"{exposure.buildings_exposed:,}")
+        bcol3.metric("Exposed share", f"{exposure.exposed_percent:.1f}%")
+        bcol4.metric(
+            "Avg. relative damage",
+            f"{exposure.avg_relative_damage:.1%}"
+            if exposure.avg_relative_damage is not None
+            else "—",
+        )
+        st.caption(
+            "Building pixel counts from the GHSL settlement raster: "
+            f"{exposure.residential_buildings_total:,} residential, "
+            f"{exposure.commercial_buildings_total:,} commercial. A building "
+            f"pixel is 'exposed' when this scene's ({_label(stamp)}) modeled "
+            "flood depth overlaps it. Average relative damage is the mean "
+            "JRC/Huizinga damage fraction over exposed building pixels only."
+        )
+
+        st.subheader("Cost damage (GHSL)")
+        ccol1, ccol2, ccol3 = st.columns(3)
+        ccol1.metric("Total cost in AOI", f"€{exposure.total_eur_damage:,.0f}")
+        ccol2.metric("Residential cost", f"€{exposure.residential_eur_damage:,.0f}")
+        ccol3.metric("Commercial cost", f"€{exposure.commercial_eur_damage:,.0f}")
+        st.caption(
+            "Estimated EUR damage = JRC MaxDamage (EUR/m², 2010 prices, not "
+            "inflation-adjusted) × relative damage × building footprint area, "
+            "summed over exposed buildings of each type — a rough "
+            "order-of-magnitude estimate, not a calibrated present-day "
+            "valuation. Agriculture and infrastructure are not included."
+        )
+    else:
+        st.info(
+            "Run the ghsl step for this band/scene to add building damage metrics."
+        )
+
 # Base map holds only the tiles and its fit_bounds, so its rendered string stays
 # identical from rerun to rerun. streamlit-folium then never reloads it and the
 # browser keeps whatever pan/zoom the user set — stepping the slider only swaps
