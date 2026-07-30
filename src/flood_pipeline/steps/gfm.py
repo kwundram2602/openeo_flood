@@ -27,6 +27,7 @@ from flood_pipeline.config import (
     SCENE_STAMP_FORMAT,
     PipelineConfig,
     is_likelihood_band,
+    vector_path,
 )
 from flood_pipeline.steps import LogFn, StepOutcome
 
@@ -171,6 +172,29 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
             "pixels. Check the GFM raster/scene browser, use a known flooded AOI "
             "or another date range; increasing max_items alone does not create "
             "detections."
+    failed_bands: list[str] = []
+    for key, band_name in cfg.resolved_bands():
+        log(f"== band {key} ({band_name}): loading {len(items)} items ...")
+        try:
+            outputs.extend(_run_band(cfg, items, bbox, key, band_name, log))
+        except Exception as e:
+            # In compare-mode, one algorithm can have broken/missing remote
+            # assets while others are still readable; keep the successful bands.
+            if cfg.gfm.compare_algorithms:
+                failed_bands.append(key)
+                log(f"WARNING: skipped band {key} ({band_name}) due to read failure: {e}")
+                continue
+            raise
+
+    if failed_bands:
+        succeeded = [k for k, _ in cfg.resolved_bands() if k not in failed_bands]
+        if not succeeded:
+            raise RuntimeError(
+                "all requested GFM bands failed to load; remote assets may be temporarily unavailable"
+            )
+        log(
+            "WARNING: finished with partial bands; failed "
+            f"{failed_bands}, succeeded {succeeded}"
         )
     return StepOutcome(outputs=outputs)
 
@@ -200,6 +224,28 @@ def _run_band(
         items, bbox, band=GFM_EXCLUSION_BAND, resolution=cfg.gfm.resolution
     )
     cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
+
+    flood_max = flood.max(dim="time")
+    outputs = [_write_geotiff(flood_max, cfg.gfm_mask_path(key), log)]
+    flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
+    log(f"detected flood pixels in temporal maximum: {flood_pixel_count}")
+    if flood_pixel_count == 0:
+        raise RuntimeError(
+            "GFM returned scenes, but ensemble_flood_extent is zero throughout "
+            "the AOI and date range. FLEXTH cannot estimate water depth without "
+            "flood pixels. Check the GFM raster/scene browser, use a known flooded "
+            "AOI or another date range; increasing max_items alone does not create "
+            "detections."
+        )
+    # Clear only this band's scene rasters from a previous run so the on-disk
+    # set matches this run. In compare-mode, clearing all bands here would
+    # delete scenes written by earlier bands in the same run.
+    for stale in cfg.gfm_scene_paths(key):
+        stale.unlink()
+        vector_path(stale).unlink(missing_ok=True)
+        
     _clear_band_scene_dirs(cfg, key)
 
     outputs: list[Path] = []

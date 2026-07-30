@@ -1,6 +1,6 @@
 project:
   name: spain_2024
-  gee_project: ee-davidvoellner
+  gee_project: ee-makhmetrauan
   data_dir: flood_data
   work_dir: preprocessed
   output_dir: wl_wd_out
@@ -71,3 +71,5 @@ flexth:
       number_smoothings: 20
       kern_closing_size: 3
       closing_iterations: 2
+osm:
+  enabled: true
