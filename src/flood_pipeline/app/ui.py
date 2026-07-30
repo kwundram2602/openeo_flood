@@ -39,11 +39,15 @@ def display_colormap(cmap: str) -> matplotlib.colors.Colormap:
     puts a lot of pixels: FLEXTH floors water depth at its minimum, so a large
     share of a WD raster carries exactly that one value and ``vmin`` lands on
     it. Starting a quarter into the ramp keeps the shallowest water readable.
+
+    Applied identically in ``_build_overlay`` (the actual map pixels) and
+    ``colorbar_figure`` (the legend), so the two always agree on color.
     """
     base = matplotlib.colormaps[cmap]
     return matplotlib.colors.LinearSegmentedColormap.from_list(
         f"{cmap}_from_{CMAP_FLOOR}", base(np.linspace(CMAP_FLOOR, 1.0, 256))
     )
+
 
 # Exact GHSL settlement classification color mapping
 GHSL_COLOR_DICT: dict[int, str] = {
@@ -63,6 +67,35 @@ GHSL_COLOR_DICT: dict[int, str] = {
     24: "#a601ff",  # built spaces, non-residential, 15m < height <= 30m
     25: "#6e00fe",  # built spaces, non-residential, height > 30m
 }
+
+# Short display names for the legend, next to GHSL_COLOR_DICT for easy upkeep.
+GHSL_CLASS_LABELS: dict[int, str] = {
+    1: "Open: low veg.",
+    2: "Open: med. veg.",
+    3: "Open: high veg.",
+    4: "Open: water",
+    5: "Open: road",
+    11: "Resid. ≤3m",
+    12: "Resid. 3–6m",
+    13: "Resid. 6–15m",
+    14: "Resid. 15–30m",
+    15: "Resid. >30m",
+    21: "Non-resid. ≤3m",
+    22: "Non-resid. 3–6m",
+    23: "Non-resid. 6–15m",
+    24: "Non-resid. 15–30m",
+    25: "Non-resid. >30m",
+}
+
+# Discrete damage severity classification mapping (JRC/Huizinga fractional damage)
+DAMAGE_BOUNDS: list[float] = [0.0, 0.05, 0.20, 0.50, 0.80, 1.0]
+DAMAGE_COLORS: list[str] = [
+    "#ffffb2",  # Minimal (< 5%): Light Yellow
+    "#fecc5c",  # Low (5–20%): Yellow/Orange
+    "#fd8d3c",  # Moderate (20–50%): Orange
+    "#e31a1c",  # Severe (50–80%): Red
+    "#800026",  # Extreme (> 80%): Deep Dark Red
+]
 
 # GHSL+Depth+Damage raster band layout (matches ghsl_step._combine_ghsl_and_depth).
 # Values are 0-indexed band_index for ui.raster_overlay()/sample_raster().
@@ -229,8 +262,6 @@ def add_flood_area_layer(
         folium.GeoJson(
             row.geometry.__geo_interface__,
             name=f"flood area {row.area_id}",
-            # Bind `chosen` per iteration: the style function is called later,
-            # when the loop variable would already point at the last row.
             style_function=lambda _feat, chosen=chosen: {
                 "color": "#ff7f0e" if chosen else "#8c564b",
                 "weight": 2 if chosen else 1,
@@ -362,9 +393,15 @@ def _build_overlay(
             rgba[class_mask] = matplotlib.colors.to_rgba(hex_code)
             known_class_mask |= class_mask
         finite_mask = finite_mask & known_class_mask
+    elif cmap == "Damage":
+        # Discrete damage severity bins
+        cmap_damage = matplotlib.colors.ListedColormap(DAMAGE_COLORS)
+        norm_damage = matplotlib.colors.BoundaryNorm(DAMAGE_BOUNDS, cmap_damage.N)
+        rgba = cmap_damage(norm_damage(np.nan_to_num(values, nan=0.0)))
+        finite_mask = finite_mask & (values > 0)
     else:
         normalized = np.clip((values - vmin) / (vmax - vmin), 0.0, 1.0)
-        rgba = matplotlib.colormaps[cmap](np.nan_to_num(normalized, nan=0.0))
+        rgba = display_colormap(cmap)(np.nan_to_num(normalized, nan=0.0))
 
     rgba[..., 3] = np.where(finite_mask, OVERLAY_OPACITY, 0.0)
 
@@ -411,21 +448,41 @@ def sample_raster(
 
 
 def colorbar_figure(vmin: float, vmax: float, cmap: str, label: str):
-    """A slim horizontal colorbar to serve as the map legend."""
+    """A slim horizontal colorbar/legend to serve as the map legend."""
     import matplotlib.pyplot as plt
 
-    fig = plt.figure(figsize=(5, 0.9))
-    ax = fig.add_axes((0.05, 0.55, 0.9, 0.3))
-
     if cmap == "GHSL":
+        fig = plt.figure(figsize=(7.5, 1.6))
+        ax = fig.add_axes((0.05, 0.55, 0.9, 0.3))
         patches = [
-            matplotlib.patches.Patch(color=hex_code, label=f"Class {cid}")
+            matplotlib.patches.Patch(
+                color=hex_code, label=GHSL_CLASS_LABELS.get(cid, f"Class {cid}")
+            )
             for cid, hex_code in GHSL_COLOR_DICT.items()
         ]
-        fig.legend(handles=patches, loc="center", ncol=3, fontsize="x-small", frameon=False)
+        fig.legend(handles=patches, loc="center", ncol=3, fontsize="small", frameon=False)
         ax.axis("off")
         return fig
 
+    if cmap == "Damage":
+        fig = plt.figure(figsize=(6.5, 1.1))
+        ax = fig.add_axes((0.05, 0.45, 0.9, 0.35))
+
+        cmap_damage = matplotlib.colors.ListedColormap(DAMAGE_COLORS)
+        norm_damage = matplotlib.colors.BoundaryNorm(DAMAGE_BOUNDS, cmap_damage.N)
+
+        cb = fig.colorbar(
+            matplotlib.cm.ScalarMappable(norm=norm_damage, cmap=cmap_damage),
+            cax=ax,
+            orientation="horizontal",
+            ticks=DAMAGE_BOUNDS,
+        )
+        cb.ax.set_xticklabels([f"{int(b*100)}%" for b in DAMAGE_BOUNDS])
+        cb.set_label(label, fontsize=10, fontweight="bold")
+        return fig
+
+    fig = plt.figure(figsize=(5, 0.9))
+    ax = fig.add_axes((0.05, 0.55, 0.9, 0.3))
     mappable = matplotlib.cm.ScalarMappable(
         norm=matplotlib.colors.Normalize(vmin=vmin, vmax=vmax),
         cmap=display_colormap(cmap),

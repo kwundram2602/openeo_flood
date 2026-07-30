@@ -18,7 +18,7 @@ import odc.stac
 import pandas as pd
 import pystac  # just using for return type hint; no STAC operations here
 import pystac_client  # open stac catalog and search for items
-import rioxarray  # noqa: F401  
+import rioxarray  # noqa: F401
 import xarray as xr
 
 from flood_pipeline import polygonize
@@ -216,6 +216,23 @@ def _run_band(
     exclusion = load_flood_cube(
         items, bbox, band=GFM_EXCLUSION_BAND, resolution=cfg.gfm.resolution
     )
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
+
+    flood_max = flood.max(dim="time")
+    outputs = [_write_geotiff(flood_max, cfg.gfm_mask_path(key), log)]
+    flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
+    log(f"detected flood pixels in temporal maximum: {flood_pixel_count}")
+    if flood_pixel_count == 0:
+        raise RuntimeError(
+            "GFM returned scenes, but ensemble_flood_extent is zero throughout "
+            "the AOI and date range. FLEXTH cannot estimate water depth without "
+            "flood pixels. Check the GFM raster/scene browser, use a known flooded "
+            "AOI or another date range; increasing max_items alone does not create "
+            "detections."
+        )
+
     cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
     # Clear only this band's scenes from a previous run so the on-disk set
     # matches this run. In compare-mode, clearing all bands here would delete

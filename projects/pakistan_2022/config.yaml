@@ -21,14 +21,14 @@ gfm:
   collection: GFM
   band: ensemble_likelihood
   temporal_extent:
-  - '2022-08-29'
+  - '2022-09-01'
   - '2022-09-03'
   resolution: 0.0003
   max_items: 0
   aggregation: max
   min_area_ha: 1.0
-  compare_algorithms: true
-  likelihood_threshold: 25
+  compare_algorithms: false
+  likelihood_threshold: 20
 flexth:
   enabled: true
   resample:
@@ -52,7 +52,7 @@ flexth:
       threshold_slope: 0.05
       size_gaps_close: 0.05
       border_percentile: 0.5
-      max_number_neighbors: 100
+      max_number_neighbors: 30
       min_flood_size: 100
       inner_quantile: 0.98
       inverse_dist_exp: 2
@@ -61,13 +61,22 @@ flexth:
       wd_star: 10
       connectivity: 8
       kernel_smoothing_size: 5
-      number_smoothings: 20
+      number_smoothings: 5
       kern_closing_size: 3
       closing_iterations: 2
-  fill_excluded: false
+  fill_excluded: true
 ghsl:
   enabled: true
   asset: JRC/GHSL/P2023A/GHS_BUILT_C/2018
   band: built_characteristics
   scale: 10
   crs: EPSG:32642
+population:
+  enabled: true
+  collection: WorldPop/GP/100m/pop_age_sex_cons_unadj
+  year: 2020
+  band: population
+  scale: 100
+  crs: EPSG:4326
+  out_name: worldpop_2020.tif
+  overwrite: true

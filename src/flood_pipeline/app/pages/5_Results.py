@@ -167,14 +167,21 @@ if len(stamps) == 1:
     stamp = stamps[0]
     st.caption(f"Scene: {_label(stamp)}")
 else:
-    stamp = st.select_slider("Scene", options=stamps, format_func=_label)
-kind = st.radio("Layer", ["Water depth", "Water level"], horizontal=True)
-stamp = st.select_slider("Scene", options=stamps, format_func=_label)
+    stamp = st.select_slider(
+        "Scene",
+        options=stamps,
+        format_func=_label,
+        key=f"scene_slider_{band}"
+    )
 layer_options = ["Water depth", "Water level"]
 if cfg.ghsl.enabled:
     layer_options.append("GHSL + Depth")
-
-kind = st.radio("Layer", layer_options, horizontal=True)
+kind = st.radio(
+    "Layer",
+    layer_options,
+    horizontal=True,
+    key=f"layer_radio_{band}"
+)
 
 if kind == "Water depth":
     wanted = "WD"
@@ -189,11 +196,12 @@ elif kind == "Water level":
     cmap = "Blues"
     band_index = 0
 else:  # GHSL + Depth
-    selected = cfg.scene_ghsl_depth_path(stamp)
+    selected = cfg.scene_ghsl_depth_path(band, stamp)
     ghsl_view = st.radio(
         "GHSL view",
         list(ui.GHSL_DEPTH_BANDS),
         horizontal=True,
+        key=f"ghsl_view_radio_{band}",
         help="GHSL class: settlement type per pixel, from GHSL's built_characteristics "
         "band. Relative damage: JRC/Huizinga depth-damage fraction (0-1) for this "
         "AOI's continent, at this scene's flood depth.",
@@ -204,7 +212,7 @@ else:  # GHSL + Depth
         cmap = "GHSL"
     else:
         scale, mask_values, label = 1.0, (0.0,), "relative flood damage [fraction]"
-        cmap = "YlOrRd"
+        cmap = "Damage"
 
 if selected is None or not selected.exists():
     st.warning(f"No raster found for layer '{kind}' in scene {_label(stamp)}.")
@@ -314,7 +322,7 @@ col3.metric("max", f"{overlay.valid_max:.2f}")
 col4.metric("valid pixels", f"{overlay.valid_fraction:.1%}")
 st.caption("Statistics exclude nodata values.")
 
-if population_path.exists() and wanted == "WD":
+if population_path.exists() and kind == "Water depth":
     try:
         exposure = calculate_exposure(population_path, selected)
         st.subheader("Population exposure")
@@ -368,6 +376,7 @@ elif show_roads or show_railways or show_flooded_infra:
 # browser keeps whatever pan/zoom the user set — stepping the slider only swaps
 # the feature group below. Frame on a constant "home" extent (the AOI, else the
 # first overlay) so the fixed initial view is stable across reruns too.
+
 if "results_home_bounds" not in st.session_state:
     if cfg.aoi_abs_path.exists():
         minx, miny, maxx, maxy = ui.aoi_outline(cfg.aoi_abs_path).total_bounds
@@ -375,12 +384,6 @@ if "results_home_bounds" not in st.session_state:
     else:
         st.session_state["results_home_bounds"] = overlay.bounds
 
-# The view only moves when the user actively picks something in the flood-area
-# box; it is remembered so every other rerun leaves fit_bounds — and with it the
-# map's identity to streamlit-folium — untouched. Stepping the scene slider
-# swaps the polygon set, so Streamlit drops the selection on its own; reading
-# that reset as "zoom back out" would throw away the view just jumped to. Hence
-# the comparison against the raster the previous selection belonged to.
 st.session_state.setdefault("results_view_bounds", st.session_state["results_home_bounds"])
 selection = (str(gfm_path), choice)
 previous = st.session_state.get("results_area_selection")
@@ -395,12 +398,11 @@ if previous is not None and previous[0] == selection[0] and previous[1] != choic
 fmap = folium.Map(tiles="OpenStreetMap")
 fmap.fit_bounds(st.session_state["results_view_bounds"])
 
-# Everything that changes with the slider/toggles goes into the feature group.
 overlays = folium.FeatureGroup(name="overlays")
 folium.raster_layers.ImageOverlay(
     image=_ensure_3d_rgba(overlay.rgba),
     bounds=overlay.bounds,
-    opacity=1.0,  # per-pixel alpha already encodes transparency
+    opacity=1.0,
     name=selected.name,
 ).add_to(overlays)
 
@@ -601,7 +603,7 @@ if clicked is not None:
     if point != st.session_state.get("results_probe_click"):
         st.session_state["results_probe_click"] = point
         st.session_state["results_probe"] = point
-        st.rerun()  # redraw so the marker lands on the freshly clicked point
+        st.rerun()
 
 if probe is None:
     st.caption("Click the map to read the value at a point.")
@@ -635,10 +637,10 @@ else:
         st.rerun()
 
 st.pyplot(
-    ui.colorbar_figure(overlay.vmin, overlay.vmax, "Blues", label),
+    ui.colorbar_figure(overlay.vmin, overlay.vmax, cmap, label),
     width="content",
 )
 st.caption(
-    "Color range is the 2nd-98th percentile of valid pixels; the map is a "
-    "downsampled preview — use QGIS on the GeoTIFF for full resolution."
+    "Color range is calibrated to damage severity classes or 2nd-98th percentile of valid pixels; "
+    "the map is a downsampled preview — use QGIS on the GeoTIFF for full resolution."
 )

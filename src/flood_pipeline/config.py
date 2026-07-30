@@ -1,10 +1,10 @@
-"""
+"""Unified pipeline configuration: dataclasses, YAML I/O and validation.
 
 The config file has one section per pipeline step (``dem``, ``gfm``, ``osm``,
-``flexth``) plus shared ``project`` and ``aoi`` sections. 
+``flexth``) plus shared ``project`` and ``aoi`` sections.
 
 The ``flexth`` section is a raw dict passthrough: it is copied into
-the generated FLEXTH config 
+the generated FLEXTH config
 """
 
 from __future__ import annotations
@@ -145,6 +145,16 @@ class PopulationConfig:
     out_name: str = "worldpop_2020.tif"
     overwrite: bool = False
 
+@dataclass
+class GhslConfig:
+    """GHSL Built-Up extraction via Google Earth Engine."""
+
+    enabled: bool = True
+    asset: str = "JRC/GHSL/P2023A/GHS_BUILT_C/2018"
+    band: str = "built_characteristics"
+    scale: int = 10
+    crs: str = "EPSG:4326"
+    out_name: str = "ghsl_built_c.tif"
 
 @dataclass
 class OsmConfig:
@@ -164,6 +174,7 @@ class PipelineConfig:
     gfm: GfmConfig
     osm: OsmConfig
     population: PopulationConfig
+    ghsl: GhslConfig
     flexth: dict
     source_path: Path
 
@@ -208,6 +219,10 @@ class PipelineConfig:
     def dem_path(self) -> Path:
         """The DEM raster the dem step produces and FLEXTH consumes."""
         return self.data_dir / self.dem.out_name
+
+    def ghsl_path(self) -> Path:
+        """The GHSL built-characteristics raster used for depth-damage combination."""
+        return self.data_dir / self.ghsl.out_name
 
     def gfm_band_dir(self, band: str) -> Path:
         """The per-band data folder holding that band's scenes and aggregates."""
@@ -273,6 +288,9 @@ class PipelineConfig:
         """The WorldPop raster used for exposure calculations."""
         return self.data_dir / self.population.out_name
 
+    def scene_work_root(self, band: str) -> Path:
+        """FLEXTH work root for a band (holds one subfolder per scene)."""
+        return self.work_dir / band
     def osm_root(self) -> Path:
         """OSM source and per-scene flood-impact outputs."""
         return self.data_dir / "osm"
@@ -321,6 +339,10 @@ class PipelineConfig:
     def scene_output_dir(self, band: str, stamp: str) -> Path:
         """FLEXTH output dir for one band/scene's WD_/WL_ rasters."""
         return self.scene_output_root(band) / stamp
+
+    def scene_ghsl_depth_path(self, band: str, stamp: str) -> Path:
+        """Path to the final GHSL + Depth raster for a specific band and scene."""
+        return self.scene_output_dir(band, stamp) / "ghsl_depth.tif"
 
     def scene_fill_path(self, band: str, stamp: str) -> Path:
         """Raster of pixels FLEXTH flooded beyond the raw GFM extent (overlay)."""
@@ -398,6 +420,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         gfm=gfm,
         osm=_section_to_dataclass(OsmConfig, raw, "osm"),
         population=_section_to_dataclass(PopulationConfig, raw, "population"),
+        ghsl=_section_to_dataclass(GhslConfig, raw, "ghsl"),
         flexth=raw.get("flexth") or {},
         source_path=path.resolve(),
     )
@@ -412,6 +435,7 @@ def to_dict(cfg: PipelineConfig) -> dict:
         "gfm": dataclasses.asdict(cfg.gfm),
         "osm": dataclasses.asdict(cfg.osm),
         "population": dataclasses.asdict(cfg.population),
+        "ghsl": dataclasses.asdict(cfg.ghsl),
         "flexth": cfg.flexth,
     }
 
