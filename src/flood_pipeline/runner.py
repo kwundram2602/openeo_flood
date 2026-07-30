@@ -1,4 +1,4 @@
-"""Pipeline orchestration: run the dem/gfm/flexth steps in order.
+"""Pipeline orchestration: run the dem/gfm/flexth/ghsl steps in order.
 
 The runner prints ``##[step:<name>] start|done|failed|skipped`` and
 ``##[pipeline] ...`` marker lines through the supplied logger. The dashboard's

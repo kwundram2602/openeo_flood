@@ -23,13 +23,13 @@ from flood_pipeline.steps import LogFn, StepOutcome, flexth_step
 
 
 def _combine_ghsl_and_depth(
-        ghsl_path: Path,
-        wd_path: Path,
-        out_path: Path,
-        *,
-        jrc_column: str,
-        damage_table: DamageTable,
-        log: LogFn = print,
+    ghsl_path: Path,
+    wd_path: Path,
+    out_path: Path,
+    *,
+    jrc_column: str,
+    damage_table: DamageTable,
+    log: LogFn = print,
 ) -> None:
     """Combine GHSL, flood depth, and relative flood damage into one GeoTIFF.
 
@@ -61,10 +61,14 @@ def _combine_ghsl_and_depth(
         )
 
         # Define valid water footprint (where FLEXTH actually produced data)
+        # Create a boolean mask of valid water depth pixels
+        # FLEXTH depth convention: 0 is nodata, 999 is permanent water
         valid_depth_mask = (wd_reprojected > 0) & (wd_reprojected < 999)
 
         # Define valid buildings
         valid_ghsl_mask = ghsl_data > 0
+        # Mask Band 1 so GHSL only keeps pixels intersecting FLEXTH water data
+        ghsl_data_masked = np.where(valid_depth_mask, ghsl_data, 0)
 
         # Keep GHSL pixels where BOTH a building exists AND water depth data is present
         # (Since FLEXTH now interpolates across the whole town core, this will
@@ -73,6 +77,8 @@ def _combine_ghsl_and_depth(
 
         ghsl_data_masked = np.where(combined_valid_mask, ghsl_data, 0)
         wd_reprojected_masked = np.where(combined_valid_mask, wd_reprojected, 0.0)
+        # Zero out invalid depth pixels in Band 2 for clean storage
+        wd_reprojected_masked = np.where(valid_depth_mask, wd_reprojected, 0.0)
 
         # Band 3: relative damage fraction. WD_*.tif is uint16 centimeters
         # (see flexth_step docs), so convert to meters for the JRC lookup,
@@ -106,12 +112,14 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
     combined GHSL+Depth+Damage raster per (band, scene) pair, matching the
     per-band directory layout the rest of the pipeline now uses.
     """
+    """Run the GHSL fetching and depth/damage combination pipeline step."""
     if not cfg.ghsl.enabled:
         log("GHSL step is disabled in the config; skipping.")
         return StepOutcome()
 
     log("Starting GHSL processing step...")
 
+    # Path setup
     # GEE is needed both for the GHSL download below and for resolve_continent()'s
     # Earth Engine country lookup, so initialize it unconditionally -- a cached
     # GHSL raster used to skip this entirely, which broke resolve_continent().
@@ -120,7 +128,13 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
 
     # Step 1: Fetch GHSL asset from GEE if not already locally cached
     ghsl_path = cfg.ghsl_path()
+    output_files = []
+
+    # Step 1: Fetch GHSL asset from GEE if not already locally cached
     if not ghsl_path.exists():
+        log(f"Initializing GEE project: {cfg.project.gee_project}")
+        gee.init_gee(cfg.project.gee_project)
+
         log(f"Downloading GHSL asset ({cfg.ghsl.asset}) via Earth Engine...")
         aoi_gdf = gpd.read_file(cfg.aoi_abs_path).to_crs(epsg=4326)
         aoi_ee = geemap.geopandas_to_ee(aoi_gdf)

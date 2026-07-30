@@ -182,7 +182,16 @@ kind = st.radio(
     horizontal=True,
     key=f"layer_radio_{band}"
 )
+stamp = st.select_slider("Scene", options=stamps, format_func=_label)
+layer_options = ["Water depth", "Water level"]
+if cfg.ghsl.enabled:
+    layer_options.append("GHSL + Depth")
 
+kind = st.radio("Layer", layer_options, horizontal=True)
+
+if kind == "Water depth":
+    wanted = "WD"
+    selected = scenes[stamp].get(wanted)
 if kind == "Water depth":
     wanted = "WD"
     selected = scenes[stamp].get(wanted)
@@ -213,6 +222,29 @@ else:  # GHSL + Depth
     else:
         scale, mask_values, label = 1.0, (0.0,), "relative flood damage [fraction]"
         cmap = "Damage"
+
+if selected is None or not selected.exists():
+    st.warning(f"No raster found for layer '{kind}' in scene {_label(stamp)}.")
+    st.stop()
+    cmap = "Blues"
+    band_index = 0
+else:  # GHSL + Depth
+    selected = cfg.scene_ghsl_depth_path(stamp)
+    ghsl_view = st.radio(
+        "GHSL view",
+        list(ui.GHSL_DEPTH_BANDS),
+        horizontal=True,
+        help="GHSL class: settlement type per pixel, from GHSL's built_characteristics "
+        "band. Relative damage: JRC/Huizinga depth-damage fraction (0-1) for this "
+        "AOI's continent, at this scene's flood depth.",
+    )
+    band_index = ui.GHSL_DEPTH_BANDS[ghsl_view]
+    if ghsl_view == "GHSL class":
+        scale, mask_values, label = 1.0, (0.0,), "GHSL settlement class"
+        cmap = "GHSL"
+    else:
+        scale, mask_values, label = 1.0, (0.0,), "relative flood damage [fraction]"
+        cmap = "YlOrRd"
 
 if selected is None or not selected.exists():
     st.warning(f"No raster found for layer '{kind}' in scene {_label(stamp)}.")
@@ -384,6 +416,12 @@ if "results_home_bounds" not in st.session_state:
     else:
         st.session_state["results_home_bounds"] = overlay.bounds
 
+# The view only moves when the user actively picks something in the flood-area
+# box; it is remembered so every other rerun leaves fit_bounds — and with it the
+# map's identity to streamlit-folium — untouched. Stepping the scene slider
+# swaps the polygon set, so Streamlit drops the selection on its own; reading
+# that reset as "zoom back out" would throw away the view just jumped to. Hence
+# the comparison against the raster the previous selection belonged to.
 st.session_state.setdefault("results_view_bounds", st.session_state["results_home_bounds"])
 selection = (str(gfm_path), choice)
 previous = st.session_state.get("results_area_selection")
@@ -398,6 +436,7 @@ if previous is not None and previous[0] == selection[0] and previous[1] != choic
 fmap = folium.Map(tiles="OpenStreetMap")
 fmap.fit_bounds(st.session_state["results_view_bounds"])
 
+# Everything that changes with the slider/toggles goes into the feature group.
 overlays = folium.FeatureGroup(name="overlays")
 folium.raster_layers.ImageOverlay(
     image=_ensure_3d_rgba(overlay.rgba),

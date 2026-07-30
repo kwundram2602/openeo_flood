@@ -2,6 +2,10 @@
 
 The config file has one section per pipeline step (``dem``, ``gfm``, ``osm``,
 ``flexth``) plus shared ``project`` and ``aoi`` sections.
+The config file has one section per pipeline step (``dem``, ``gfm``, ``flexth``, ``ghsl``)
+plus shared ``project`` and ``aoi`` sections. All paths in the file are
+interpreted relative to the directory containing the YAML file, so the config
+stays portable across machines.
 
 The ``flexth`` section is a raw dict passthrough: it is copied into
 the generated FLEXTH config
@@ -162,6 +166,17 @@ class OsmConfig:
 
     enabled: bool = False
 
+
+
+@dataclass
+class GhslConfig:
+    """GHSL settlement characteristics extraction via Google Earth Engine."""
+
+    enabled: bool = True
+    asset: str = "JRC/GHSL/P2023A/GHS_BUILT_C/2018"
+    band: str = "built_characteristics"
+    scale: int = 10
+    crs: str = "EPSG:4326"
 
 
 @dataclass
@@ -352,13 +367,16 @@ class PipelineConfig:
         """Band keys that have at least one scene output folder on disk."""
         if not self.output_dir.exists():
             return []
-        return sorted(
-            p.name
-            for p in self.output_dir.iterdir()
-            if p.is_dir()
-            and any(s.is_dir() and SCENE_DIR_RE.match(s.name) for s in p.iterdir())
-        )
+        scenes = [
+            p
+            for p in self.data_dir.glob(GFM_SCENE_NAME)
+            if GFM_SCENE_STAMP_RE.search(p.name)
+        ]
+        return sorted(scenes, key=lambda p: p.name)
 
+    def ghsl_path(self) -> Path:
+        """Path to the downloaded base GHSL raster for the AOI."""
+        return self.data_dir / "ghsl_built.tif"
 
 def vector_path(raster: Path) -> Path:
     """The flood-area polygon file belonging to a flood raster.
