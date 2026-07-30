@@ -1,13 +1,10 @@
-"""Unified pipeline configuration: dataclasses, YAML I/O and validation.
+"""
 
 The config file has one section per pipeline step (``dem``, ``gfm``, ``osm``,
-``flexth``) plus shared ``project`` and ``aoi`` sections. All paths in the
-file are interpreted relative to the directory containing the YAML file, so
-the config stays portable across machines.
+``flexth``) plus shared ``project`` and ``aoi`` sections. 
 
-The ``flexth`` section is a raw dict passthrough: it is copied verbatim into
-the generated FLEXTH config (see :mod:`flood_pipeline.steps.flexth_step`), so
-this module does not duplicate FLEXTH's own schema.
+The ``flexth`` section is a raw dict passthrough: it is copied into
+the generated FLEXTH config 
 """
 
 from __future__ import annotations

@@ -1,13 +1,7 @@
-"""FLEXTH water-depth step: generate FLEXTH's config and run its pipeline CLI.
+"""generate FLEXTH's config and run its pipeline CLI.
 
-FLEXTH (installed as a git dependency) has its own YAML schema and a
-``pipeline`` subcommand chaining merge -> resample -> prepare-dtm -> run. This
-module maps the unified config onto that schema and drives it as a subprocess
-so its output can be streamed line by line.
-
-FLEXTH is driven once per GFM scene, but prepare-dtm only runs for the first of
-them: the warped DEM is grid-identical for every date, so it is cached in the
-shared work dir and linked into the later scenes' work dirs.
+resample -> prepare-dtm -> run. This
+module runs it as a subprocess so its output can be streamed line by line.
 """
 
 from __future__ import annotations
@@ -32,11 +26,6 @@ FLEXTH_CONFIG_NAME = "flexth_config.yaml"
 
 def prepared_dtm_path(cfg: PipelineConfig) -> Path:
     """The DEM warped onto the FLEXTH grid, shared by every scene.
-
-    All scenes come from one GFM cube (same bbox, CRS and resolution), so their
-    resampled flood.tif grids are identical and the warped DEM is too. It is
-    therefore prepared once per run and cached in the shared work dir instead of
-    being re-warped for every date.
     """
     return cfg.work_dir / DTM_FILENAME
 
@@ -51,10 +40,7 @@ def build_flexth_config(
 ) -> dict:
     """Build a FLEXTH-schema config for one scene from the unified config.
 
-    ``gfm_path`` is that scene's flood mask; ``work_dir``/``output_dir`` are the
-    scene's own dirs so FLEXTH's derived flood.tif/dtm.tif never collide between
-    scenes. ``merge`` is always disabled and the ``flexth:`` subtree of the
-    unified config is passed through verbatim.
+    ``gfm_path`` is that scene's flood mask.
 
     ``prepare_dtm=False`` switches FLEXTH's prepare-dtm step off for this scene:
     the caller has already linked the shared prepared DTM into ``work_dir``. A
@@ -141,12 +127,6 @@ def _clear_orphan_scene_dirs(
 ) -> None:
     """Delete a band's scene folders whose GFM scene this run no longer has.
 
-    The gfm step drops the per-scene folders a re-run does not reproduce (a
-    narrowed time window, a redrawn AOI, a scene that turned out empty), so
-    without this their WD/WL folders outlive their input: the dashboard keeps
-    listing the scene, on a grid that no longer matches, with no mask and no
-    flood-area polygons behind it. Only folders named exactly like a stamp are
-    touched — anything else in the band's work/output dir is left alone.
     """
     for parent in (cfg.scene_work_root(band), cfg.scene_output_root(band)):
         if not parent.exists():
@@ -160,10 +140,6 @@ def _clear_orphan_scene_dirs(
 
 def _link_or_copy(source: Path, target: Path) -> None:
     """Make ``target`` a second name for ``source``, hardlinking when possible.
-
-    Scene work dirs live inside the shared work dir (same filesystem), so the
-    hardlink normally succeeds and the prepared DTM exists only once on disk;
-    the copy is the fallback for filesystems without hardlinks.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     target.unlink(missing_ok=True)

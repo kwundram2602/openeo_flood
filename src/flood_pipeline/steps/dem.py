@@ -1,7 +1,5 @@
 """FABDEM DEM step: mosaic from Google Earth Engine, local download or Drive export.
 
-Port of the former ``xarray_pipelines/fabdem.py`` without import-time side
-effects: authentication, AOI path and GEE project all come from the config.
 """
 
 from __future__ import annotations
@@ -29,9 +27,6 @@ def load_aoi(aoi_path: Path) -> gpd.GeoDataFrame:
 
 def build_fabdem_image(aoi: gpd.GeoDataFrame) -> tuple[ee.Image, ee.Geometry]:
     """FABDEM mosaic clipped to the AOI, plus the AOI as an EE geometry.
-
-    FABDEM is a static DEM (no time dimension); the tiles intersecting the
-    AOI are mosaicked into a single image.
     """
     aoi_ee = geemap.geopandas_to_ee(aoi)
     mosaic = ee.ImageCollection(FABDEM_COLLECTION).filterBounds(aoi_ee).mosaic()
@@ -40,10 +35,6 @@ def build_fabdem_image(aoi: gpd.GeoDataFrame) -> tuple[ee.Image, ee.Geometry]:
 
 def covers_aoi(dem_path: Path, aoi_bounds_4326: tuple[float, float, float, float]) -> bool:
     """Whether an existing DEM raster's extent contains the AOI bounds.
-
-    Guards the skip-if-exists shortcut: a cached DEM downloaded for a
-    different (e.g. previously drawn) AOI must not be reused silently.
-    Tolerance is one pixel on each edge.
     """
     with rasterio.open(dem_path) as source:
         left, bottom, right, top = rasterio.warp.transform_bounds(
@@ -61,14 +52,6 @@ def covers_aoi(dem_path: Path, aoi_bounds_4326: tuple[float, float, float, float
 
 def normalize_nodata(dem_path: Path, log: LogFn = print) -> bool:
     """Rewrite an infinite nodata value to NaN in place. True if it changed.
-
-    Earth Engine hands out float exports with ``-inf`` as the NoData value.
-    FLEXTH multiplies the DEM by zero while growing the water surface into the
-    neighbourhood, and ``inf * 0`` is an invalid operation (``NaN * 0`` is
-    not), so every nodata pixel raises a RuntimeWarning there; GDAL and QGIS
-    also handle ``-inf`` nodata inconsistently. NaN marks the same pixels with
-    the same effect downstream — comparisons against it stay False, so those
-    pixels remain unfloodable — without the warning.
     """
     with rasterio.open(dem_path) as source:
         if source.nodata is None or not np.isinf(source.nodata):
