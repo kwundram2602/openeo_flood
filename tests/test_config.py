@@ -85,7 +85,6 @@ def test_everything_resolves_inside_the_project_folder(config_file: Path) -> Non
     assert cfg.project_dir == project_dir
     assert cfg.data_dir == project_dir / "flood_data"
     assert cfg.dem_path() == project_dir / "flood_data" / "fabdem.tif"
-    assert cfg.gfm_mask_path().name == "gfm_flood_max.tif"
     assert cfg.population_path().name == "worldpop_2020.tif"
     assert cfg.gfm_mask_path("ensemble") == project_dir / "flood_data" / "ensemble" / "gfm_flood_max.tif"
     assert cfg.aoi_abs_path == project_dir / "aoi.geojson"

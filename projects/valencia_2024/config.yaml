@@ -27,7 +27,7 @@ gfm:
   max_items: 0
   aggregation: max
   min_area_ha: 0.0
-  compare_algorithms: true
+  compare_algorithms: false
   likelihood_threshold: 20
 flexth:
   enabled: true
@@ -65,3 +65,12 @@ flexth:
       kern_closing_size: 3
       closing_iterations: 2
   fill_excluded: true
+population:
+  enabled: true
+  collection: WorldPop/GP/100m/pop_age_sex_cons_unadj
+  year: 2020
+  band: population
+  scale: 100
+  crs: EPSG:4326
+  out_name: worldpop_2020.tif
+  overwrite: false

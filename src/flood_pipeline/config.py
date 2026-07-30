@@ -251,9 +251,9 @@ class PipelineConfig:
         """The WorldPop raster used for exposure calculations."""
         return self.data_dir / self.population.out_name
 
-    def scene_work_dir(self, stamp: str) -> Path:
-        """FLEXTH work dir for one scene (own flood.tif/dtm.tif)."""
-        return self.work_dir / stamp
+    def scene_work_root(self, band: str) -> Path:
+        """FLEXTH work root for a band (holds one subfolder per scene)."""
+        return self.work_dir / band
 
     def scene_output_root(self, band: str) -> Path:
         """FLEXTH output root for a band (holds one subfolder per scene)."""

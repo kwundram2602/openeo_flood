@@ -11,7 +11,12 @@ import rioxarray  # noqa: F401  (registers the .rio accessor)
 import xarray as xr
 import yaml
 
-from flood_pipeline.config import FLOOD_AREA_LAYER, load_config, vector_path
+from flood_pipeline.config import (
+    FLOOD_AREA_LAYER,
+    GFM_ALGORITHM_BANDS,
+    load_config,
+    vector_path,
+)
 from flood_pipeline.steps import gfm
 
 CONFIG = {
@@ -69,6 +74,30 @@ def test_run_writes_only_flooded_scenes_single_band(cfg, monkeypatch) -> None:
     assert cfg.gfm_scene_stamps("ensemble") == [FLOODED]
     assert cfg.gfm_exclusion_path("ensemble", FLOODED).exists()
     assert flooded in outcome.outputs
+
+
+def test_run_raises_when_no_band_has_flood_pixels(cfg, monkeypatch) -> None:
+    """FLEXTH needs flood pixels; an all-empty run must say so, not fail later."""
+    _patch(monkeypatch)
+    empty = _fake_cube().where(lambda cube: cube < 0)
+    monkeypatch.setattr(gfm, "load_flood_cube", lambda *a, **k: empty)
+    with pytest.raises(RuntimeError, match="flood extent is zero"):
+        gfm.run(cfg, log=lambda _line: None)
+
+
+def test_run_keeps_going_when_only_one_algorithm_band_is_empty(cfg, monkeypatch) -> None:
+    """Comparing algorithms: one empty algorithm must not abort the others."""
+    _patch(monkeypatch)
+    cfg.gfm.compare_algorithms = True
+    empty = _fake_cube().where(lambda cube: cube < 0)
+    filled = _fake_cube()
+
+    def _cube(*_a, band: str = "", **_k):
+        return empty if band == GFM_ALGORITHM_BANDS["dlr"] else filled
+
+    monkeypatch.setattr(gfm, "load_flood_cube", _cube)
+    gfm.run(cfg, log=lambda _line: None)
+    assert cfg.gfm_mask_path("ensemble").exists()
 
 
 def test_run_writes_every_algorithm_band_when_comparing(cfg, monkeypatch) -> None:

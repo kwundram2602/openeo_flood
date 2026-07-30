@@ -156,9 +156,22 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
     _remove_legacy_flat_layout(cfg, log)
 
     outputs: list[Path] = []
+    flood_pixels = 0
     for key, band_name in cfg.resolved_bands():
         log(f"== band {key} ({band_name}): loading {len(items)} items ...")
-        outputs.extend(_run_band(cfg, items, bbox, key, band_name, log))
+        band_outputs, band_pixels = _run_band(cfg, items, bbox, key, band_name, log)
+        outputs.extend(band_outputs)
+        flood_pixels += band_pixels
+    if flood_pixels == 0:
+        # Only when no band detected anything: with compare_algorithms a single
+        # empty algorithm is a real result, not a broken run.
+        raise RuntimeError(
+            "GFM returned scenes, but the flood extent is zero throughout the AOI "
+            "and date range. FLEXTH cannot estimate water depth without flood "
+            "pixels. Check the GFM raster/scene browser, use a known flooded AOI "
+            "or another date range; increasing max_items alone does not create "
+            "detections."
+        )
     return StepOutcome(outputs=outputs)
 
 
@@ -169,8 +182,12 @@ def _run_band(
     key: str,
     band_name: str,
     log: LogFn,
-) -> list[Path]:
-    """Write one band's per-scene rasters and whole-time aggregates."""
+) -> tuple[list[Path], int]:
+    """Write one band's per-scene rasters and whole-time aggregates.
+
+    Returns the written paths and the band's flood pixel count in the temporal
+    maximum, which the caller uses to detect a run without any detections.
+    """
     flood = load_flood_cube(items, bbox, band=band_name, resolution=cfg.gfm.resolution)
     # Keep the raw likelihood so its scenes can be shown/probed; the extent used
     # downstream is the thresholded version.
@@ -182,27 +199,6 @@ def _run_band(
     exclusion = load_flood_cube(
         items, bbox, band=GFM_EXCLUSION_BAND, resolution=cfg.gfm.resolution
     )
-    cfg.data_dir.mkdir(parents=True, exist_ok=True)
-
-    flood_max = flood.max(dim="time")
-    outputs = [_write_geotiff(flood_max, cfg.gfm_mask_path(), log)]
-    flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
-    log(f"detected flood pixels in temporal maximum: {flood_pixel_count}")
-    if flood_pixel_count == 0:
-        raise RuntimeError(
-            "GFM returned scenes, but ensemble_flood_extent is zero throughout "
-            "the AOI and date range. FLEXTH cannot estimate water depth without "
-            "flood pixels. Check the GFM raster/scene browser, use a known flooded "
-            "AOI or another date range; increasing max_items alone does not create "
-            "detections."
-        )
-    # Clear per-scene rasters (and their polygons) from a previous run so the
-    # on-disk set matches this run — skipped/empty scenes must not linger and
-    # re-feed FLEXTH.
-    for stale in cfg.gfm_scene_paths():
-        stale.unlink()
-        vector_path(stale).unlink(missing_ok=True)
-        
     cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
     _clear_band_scene_dirs(cfg, key)
 
@@ -236,9 +232,10 @@ def _run_band(
             )
 
     log(f"band {key}: wrote {scene_count} scene(s), skipped {skipped} empty")
-    outputs.extend(
-        _write_scene(cfg, flood.max(dim="time"), cfg.gfm_mask_path(key), "max", log)
-    )
+    flood_max = flood.max(dim="time")
+    flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
+    log(f"band {key}: flood pixels in temporal maximum: {flood_pixel_count}")
+    outputs.extend(_write_scene(cfg, flood_max, cfg.gfm_mask_path(key), "max", log))
     if cfg.gfm.aggregation in ("sum", "both"):
         # No polygons here: sum > 0 covers exactly the same pixels as max > 0.
         outputs.append(
@@ -254,7 +251,7 @@ def _run_band(
             reference.max(dim="time"), cfg.gfm_reference_water_path(key), log
         )
     )
-    return outputs
+    return outputs, flood_pixel_count
 
 
 def _clear_band_scene_dirs(cfg: PipelineConfig, band: str) -> None:

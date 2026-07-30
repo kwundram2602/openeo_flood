@@ -20,9 +20,16 @@ from flood_pipeline.config import load_config
 from flood_pipeline.steps import dem
 
 
-def _write_raster(path: Path, bounds: tuple[float, float, float, float]) -> None:
+def _write_raster(
+    path: Path,
+    bounds: tuple[float, float, float, float],
+    nodata: float | None = None,
+) -> None:
     west, south, east, north = bounds
     width = height = 50
+    values = np.zeros((1, height, width), dtype="float32")
+    if nodata is not None:
+        values[0, :5, :] = nodata
     with rasterio.open(
         path,
         "w",
@@ -32,9 +39,10 @@ def _write_raster(path: Path, bounds: tuple[float, float, float, float]) -> None
         count=1,
         dtype="float32",
         crs="EPSG:4326",
+        nodata=nodata,
         transform=from_bounds(west, south, east, north, width, height),
     ) as dst:
-        dst.write(np.zeros((1, height, width), dtype="float32"))
+        dst.write(values)
 
 
 def _write_aoi(path: Path, bounds: tuple[float, float, float, float]) -> None:
@@ -88,6 +96,44 @@ def test_run_skips_when_cached_dem_covers_aoi(cfg, monkeypatch) -> None:
     outcome = dem.run(cfg, log=lines.append)
     assert outcome.outputs == [cfg.dem_path()]
     assert any("skipping download" in line for line in lines)
+
+
+def test_normalize_nodata_rewrites_infinite_nodata_to_nan(tmp_path: Path) -> None:
+    """-inf nodata (what Earth Engine writes) becomes NaN, same pixels marked."""
+    raster = tmp_path / "dem.tif"
+    _write_raster(raster, (15.0, 48.0, 15.2, 48.2), nodata=-np.inf)
+
+    assert dem.normalize_nodata(raster, log=lambda _line: None) is True
+
+    with rasterio.open(raster) as source:
+        values = source.read(1)
+        assert np.isnan(source.nodata)
+        assert np.isnan(values[:5, :]).all()
+        assert not np.isinf(values).any()
+        assert (values[5:, :] == 0).all()
+        assert source.bounds == rasterio.coords.BoundingBox(15.0, 48.0, 15.2, 48.2)
+        assert source.crs.to_string() == "EPSG:4326"
+
+
+def test_normalize_nodata_leaves_finite_nodata_alone(tmp_path: Path) -> None:
+    raster = tmp_path / "dem.tif"
+    _write_raster(raster, (15.0, 48.0, 15.2, 48.2), nodata=-9999.0)
+    mtime = raster.stat().st_mtime_ns
+
+    assert dem.normalize_nodata(raster, log=lambda _line: None) is False
+    assert raster.stat().st_mtime_ns == mtime
+
+
+def test_run_normalizes_a_cached_dem_before_reusing_it(cfg, monkeypatch) -> None:
+    """A DEM downloaded before this fix is repaired on the next run."""
+    cfg.data_dir.mkdir(parents=True)
+    _write_raster(cfg.dem_path(), (14.9, 47.9, 15.3, 48.3), nodata=-np.inf)
+    monkeypatch.setattr(gee, "init_gee", lambda _project: None)
+
+    dem.run(cfg, log=lambda _line: None)
+
+    with rasterio.open(cfg.dem_path()) as source:
+        assert np.isnan(source.nodata)
 
 
 def test_run_redownloads_when_cached_dem_misses_aoi(cfg, monkeypatch) -> None:

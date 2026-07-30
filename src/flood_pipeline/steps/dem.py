@@ -11,6 +11,7 @@ from pathlib import Path
 import ee
 import geemap
 import geopandas as gpd
+import numpy as np
 import rasterio
 import rasterio.warp
 
@@ -58,6 +59,32 @@ def covers_aoi(dem_path: Path, aoi_bounds_4326: tuple[float, float, float, float
         )
 
 
+def normalize_nodata(dem_path: Path, log: LogFn = print) -> bool:
+    """Rewrite an infinite nodata value to NaN in place. True if it changed.
+
+    Earth Engine hands out float exports with ``-inf`` as the NoData value.
+    FLEXTH multiplies the DEM by zero while growing the water surface into the
+    neighbourhood, and ``inf * 0`` is an invalid operation (``NaN * 0`` is
+    not), so every nodata pixel raises a RuntimeWarning there; GDAL and QGIS
+    also handle ``-inf`` nodata inconsistently. NaN marks the same pixels with
+    the same effect downstream — comparisons against it stay False, so those
+    pixels remain unfloodable — without the warning.
+    """
+    with rasterio.open(dem_path) as source:
+        if source.nodata is None or not np.isinf(source.nodata):
+            return False
+        if not np.issubdtype(np.dtype(source.dtypes[0]), np.floating):
+            return False  # an integer band cannot hold NaN
+        profile = source.profile
+        values = source.read()
+    values = np.where(np.isinf(values), np.nan, values).astype(profile["dtype"])
+    profile.update(nodata=np.nan)
+    with rasterio.open(dem_path, "w", **profile) as destination:
+        destination.write(values)
+    log(f"rewrote infinite nodata to NaN in {dem_path.name}")
+    return True
+
+
 def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
     """Fetch the FABDEM DEM for the AOI according to ``cfg.dem``."""
     out_path = cfg.dem_path()
@@ -68,6 +95,9 @@ def run(cfg: PipelineConfig, log: LogFn = print) -> StepOutcome:
     if out_path.exists() and not cfg.dem.overwrite:
         if covers_aoi(out_path, bounds):
             log(f"DEM already present and covers the AOI, skipping download: {out_path}")
+            # Also repairs a DEM downloaded before nodata normalization existed
+            # (including one delivered by hand from a Drive export).
+            normalize_nodata(out_path, log)
             return StepOutcome(outputs=[out_path])
         log(f"existing {out_path.name} does not cover the AOI — downloading a new DEM")
 
@@ -97,6 +127,7 @@ def _download_local(
         scale=cfg.dem.scale,
         crs=cfg.dem.crs,
     )
+    normalize_nodata(out_path, log)
     log(f"DEM written: {out_path}")
     return StepOutcome(outputs=[out_path])
 
