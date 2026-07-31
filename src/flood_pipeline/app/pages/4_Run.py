@@ -41,29 +41,33 @@ enabled_by_step = {
     "osm": cfg.osm.enabled,
     "flexth": bool(cfg.flexth.get("enabled", True)),
     "population": cfg.population.enabled,
+    "ghsl": cfg.ghsl.enabled,
 }
 st.markdown("**Steps to run** (steps disabled in the config are skipped either way):")
 columns = st.columns(len(STEP_ORDER))
 selected_steps = [
     step
     for step, column in zip(STEP_ORDER, columns)
-    if column.checkbox(step, value=enabled_by_step[step])
+    if column.checkbox(step, value=enabled_by_step.get(step, True))
 ]
 
+# GEE is required if running either the dem step (with local delivery) or the ghsl/population step
 needs_gee = (
-    ("dem" in selected_steps and enabled_by_step["dem"])
+    ("dem" in selected_steps and enabled_by_step["dem"] and cfg.dem.delivery == "local")
     or ("population" in selected_steps and enabled_by_step["population"])
+    or ("ghsl" in selected_steps and enabled_by_step["ghsl"])
 )
+
 if needs_gee:
-    with st.expander("Google Earth Engine status (needed for DEM/WorldPop)"):
+    with st.expander("Google Earth Engine status (needed for GEE-based steps)"):
         st.caption(
-            "The DEM and WorldPop steps need cached GEE credentials; the dashboard cannot run "
+            "The dem/ghsl steps need cached GEE credentials; the dashboard cannot run "
             "the interactive login itself."
         )
         if st.button("Check GEE authentication"):
-            from flood_pipeline.gee import try_init_gee  # lazy: imports ee
+            import flood_pipeline.gee as gee_module  # lazy direct import
 
-            error_message = try_init_gee(cfg.project.gee_project)
+            error_message = gee_module.try_init_gee(cfg.project.gee_project)
             if error_message:
                 st.error(error_message)
             else:
@@ -97,7 +101,7 @@ if run_clicked:
         encoding="utf-8",
         errors="replace",
         bufsize=1,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"},
     ) as process:
         assert process.stdout is not None  # PIPE guarantees a stream
         for raw_line in process.stdout:

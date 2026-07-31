@@ -23,6 +23,26 @@ def _saved(section: str) -> None:
     st.toast(f"Saved {section} to {cfg_path.name}", icon="💾")
 
 
+def _suggest_utm_epsg(aoi_path) -> str | None:
+    """UTM zone EPSG code for the AOI's centroid, or None if the AOI is missing.
+
+    A UTM CRS is only accurate near its own zone (~6° of longitude); using a
+    zone from a different part of the world -- e.g. a template copied from
+    another project -- silently produces a badly warped grid instead of an
+    error, so this is worth checking whenever the AOI changes.
+    """
+    import geopandas as gpd
+
+    if not aoi_path.exists():
+        return None
+    gdf = gpd.read_file(aoi_path).to_crs(epsg=4326)
+    union = gdf.union_all() if hasattr(gdf, "union_all") else gdf.unary_union
+    lon, lat = union.centroid.x, union.centroid.y
+    zone = int((lon + 180) // 6) + 1
+    epsg = 32600 + zone if lat >= 0 else 32700 + zone
+    return f"EPSG:{epsg}"
+
+
 # --- project + AOI -----------------------------------------------------------
 project = cfg_dict.setdefault("project", {})
 aoi = cfg_dict.setdefault("aoi", {})
@@ -228,6 +248,23 @@ prepare_dtm = flexth.setdefault("prepare_dtm", {})
 flood_processing = flexth.setdefault("flood_processing", {})
 params = flood_processing.setdefault("params", {})
 
+# Outside the form: forms only apply widget values on submit, but this needs
+# to compute a suggestion and feed it back into the CRS field's default value
+# on the very next render, which a plain form submit button can't do.
+aoi_full_path = cfg_path.parent / aoi.get("path", "aoi_drawn.geojson")
+suggest_col, warn_col = st.columns([1, 3])
+if suggest_col.button(
+    "🧭 Suggest UTM CRS from AOI",
+    help="Reads the AOI's centroid and picks the matching UTM zone. "
+    "A CRS from the wrong zone silently distorts the FLEXTH grid instead of erroring.",
+):
+    suggestion = _suggest_utm_epsg(aoi_full_path)
+    if suggestion is None:
+        warn_col.warning(f"AOI file not found at `{aoi_full_path}` — save an AOI first.")
+    else:
+        st.session_state["suggested_utm_crs"] = suggestion
+        st.toast(f"Suggested {suggestion} from the AOI centroid", icon="🧭")
+
 with st.form("flexth_form"):
     st.subheader("FLEXTH (water depth)")
     flexth_enabled = st.checkbox("Enabled", value=flexth.get("enabled", True))
@@ -241,7 +278,12 @@ with st.form("flexth_form"):
     st.markdown("**Resample** — GFM mask → metric master grid (`flood.tif`)")
     col1, col2, col3, col4 = st.columns(4)
     resample_enabled = col1.checkbox("resample enabled", value=resample.get("enabled", True))
-    resample_crs = col2.text_input("Target CRS", value=resample.get("crs", "EPSG:32633"))
+    resample_crs = col2.text_input(
+        "Target CRS",
+        value=st.session_state.get("suggested_utm_crs", resample.get("crs", "EPSG:32633")),
+        help="Projected metric CRS matching the AOI's UTM zone. "
+        "Use the 'Suggest UTM CRS from AOI' button above if unsure.",
+    )
     resample_res = resample.get("resolution", [30, 30])
     res_x = col3.number_input("Resolution x [m]", value=float(resample_res[0]), min_value=1.0)
     res_y = col4.number_input("Resolution y [m]", value=float(resample_res[1]), min_value=1.0)
@@ -317,4 +359,31 @@ with st.form("flexth_form"):
             enabled=processing_enabled, output_map=output_map, wl_estimation_method=wl_method
         )
         params.update(new_params)
+        st.session_state.pop("suggested_utm_crs", None)
         _saved("flexth")
+
+# --- ghsl ---------------------------------------------------------------------
+ghsl = cfg_dict.setdefault("ghsl", {})
+with st.form("ghsl_form"):
+    st.subheader("GHSL Built-Up (via Google Earth Engine)")
+    ghsl_enabled = st.checkbox("Enabled", value=ghsl.get("enabled", True))
+    asset = st.text_input(
+        "GEE Asset ID",
+        value=ghsl.get("asset", "JRC/GHSL/P2023A/GHS_BUILT_C/2018"),
+    )
+    col1, col2, col3 = st.columns(3)
+    ghsl_band = col1.text_input("Band", value=ghsl.get("band", "built_characteristics"))
+    ghsl_scale = col2.number_input(
+        "Scale [m]", value=int(ghsl.get("scale", 10)), min_value=1, step=5
+    )
+    ghsl_crs = col3.text_input("CRS", value=ghsl.get("crs", "EPSG:4326"))
+
+    if st.form_submit_button("Save ghsl"):
+        ghsl.update(
+            enabled=ghsl_enabled,
+            asset=asset,
+            band=ghsl_band,
+            scale=int(ghsl_scale),
+            crs=ghsl_crs,
+        )
+        _saved("ghsl")
