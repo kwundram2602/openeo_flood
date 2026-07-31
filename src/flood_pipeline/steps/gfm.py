@@ -19,7 +19,7 @@ import odc.stac
 import pandas as pd
 import pystac  # just using for return type hint; no STAC operations here
 import pystac_client  # open stac catalog and search for items
-import rioxarray  # noqa: F401  
+import rioxarray  # noqa: F401
 import xarray as xr
 
 from flood_pipeline import polygonize
@@ -217,7 +217,23 @@ def _run_band(
     exclusion = load_flood_cube(
         items, bbox, band=GFM_EXCLUSION_BAND, resolution=cfg.gfm.resolution
     )
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.gfm_band_dir(key).mkdir(parents=True, exist_ok=True)
+
+    # Check for detections before writing or clearing anything: a doomed
+    # (all-empty) band must not wipe the previous run's scene folders.
+    flood_max = flood.max(dim="time")
+    flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
+    log(f"detected flood pixels in temporal maximum: {flood_pixel_count}")
+    if flood_pixel_count == 0:
+        raise RuntimeError(
+            "GFM returned scenes, but ensemble_flood_extent is zero throughout "
+            "the AOI and date range. FLEXTH cannot estimate water depth without "
+            "flood pixels. Check the GFM raster/scene browser, use a known flooded "
+            "AOI or another date range; increasing max_items alone does not create "
+            "detections."
+        )
+
     # Clear only this band's scenes from a previous run so the on-disk set
     # matches this run. In compare-mode, clearing all bands here would delete
     # scenes written by earlier bands in the same run.
@@ -253,8 +269,6 @@ def _run_band(
             )
 
     log(f"band {key}: wrote {scene_count} scene(s), skipped {skipped} empty")
-    flood_max = flood.max(dim="time")
-    flood_pixel_count = int(np.count_nonzero(np.nan_to_num(flood_max.values) > 0))
     log(f"band {key}: flood pixels in temporal maximum: {flood_pixel_count}")
     outputs.extend(_write_scene(cfg, flood_max, cfg.gfm_mask_path(key), "max", log))
     if cfg.gfm.aggregation in ("sum", "both"):

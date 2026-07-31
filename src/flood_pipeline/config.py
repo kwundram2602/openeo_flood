@@ -1,10 +1,12 @@
-"""
+"""Unified pipeline configuration: dataclasses, YAML I/O and validation.
 
 The config file has one section per pipeline step (``dem``, ``gfm``, ``osm``,
-``flexth``) plus shared ``project`` and ``aoi`` sections. 
+``flexth``, ``population``, ``ghsl``) plus shared ``project`` and ``aoi``
+sections. All paths in the file are interpreted relative to the directory
+containing the YAML file, so the config stays portable across machines.
 
 The ``flexth`` section is a raw dict passthrough: it is copied into
-the generated FLEXTH config 
+the generated FLEXTH config
 """
 
 from __future__ import annotations
@@ -132,6 +134,14 @@ class GfmConfig:
     compare_algorithms: bool = False  # run all four algorithm bands, not just `band`
     likelihood_threshold: int = 25  # percent; only used for a *_likelihood band
 
+
+@dataclass
+class OsmConfig:
+    """OSM infrastructure extraction and flood-impact summary."""
+
+    enabled: bool = False
+
+
 @dataclass
 class PopulationConfig:
     """WorldPop exposure-layer retrieval via Google Earth Engine."""
@@ -147,11 +157,15 @@ class PopulationConfig:
 
 
 @dataclass
-class OsmConfig:
-    """OSM infrastructure extraction and flood-impact summary."""
+class GhslConfig:
+    """GHSL settlement characteristics extraction via Google Earth Engine."""
 
-    enabled: bool = False
-
+    enabled: bool = True
+    asset: str = "JRC/GHSL/P2023A/GHS_BUILT_C/2018"
+    band: str = "built_characteristics"
+    scale: int = 10
+    crs: str = "EPSG:4326"
+    out_name: str = "ghsl_built_c.tif"
 
 
 @dataclass
@@ -164,6 +178,7 @@ class PipelineConfig:
     gfm: GfmConfig
     osm: OsmConfig
     population: PopulationConfig
+    ghsl: GhslConfig
     flexth: dict
     source_path: Path
 
@@ -208,6 +223,10 @@ class PipelineConfig:
     def dem_path(self) -> Path:
         """The DEM raster the dem step produces and FLEXTH consumes."""
         return self.data_dir / self.dem.out_name
+
+    def ghsl_path(self) -> Path:
+        """The GHSL built-characteristics raster used for depth-damage combination."""
+        return self.data_dir / self.ghsl.out_name
 
     def gfm_band_dir(self, band: str) -> Path:
         """The per-band data folder holding that band's scenes and aggregates."""
@@ -269,9 +288,25 @@ class PipelineConfig:
                     paths.append(scene_path)
         return paths
 
+    def gfm_output_bands(self) -> list[str]:
+        """Band keys that have at least one scene output folder on disk.
+
+        Scans for ``<data_dir>/<band>/<stamp>/gfm_flood.tif`` two levels
+        down, since that's where ``gfm_scene_path`` actually writes them.
+        """
+        if not self.data_dir.exists():
+            return []
+        scene_files = self.data_dir.glob(f"*/*/{GFM_SCENE_NAME}")
+        bands = {p.parents[1].name for p in scene_files}
+        return sorted(bands)
+
     def population_path(self) -> Path:
         """The WorldPop raster used for exposure calculations."""
         return self.data_dir / self.population.out_name
+
+    def scene_work_root(self, band: str) -> Path:
+        """FLEXTH work root for a band (holds one subfolder per scene)."""
+        return self.work_dir / band
 
     def osm_root(self) -> Path:
         """OSM source and per-scene flood-impact outputs."""
@@ -310,10 +345,6 @@ class PipelineConfig:
         """FLEXTH output root for a band (holds one subfolder per scene)."""
         return self.output_dir / band
 
-    def scene_work_root(self, band: str) -> Path:
-        """FLEXTH work root for a band (holds one subfolder per scene)."""
-        return self.work_dir / band
-
     def scene_work_dir(self, band: str, stamp: str) -> Path:
         """FLEXTH work dir for one band/scene (own flood.tif/dtm.tif)."""
         return self.scene_work_root(band) / stamp
@@ -322,20 +353,13 @@ class PipelineConfig:
         """FLEXTH output dir for one band/scene's WD_/WL_ rasters."""
         return self.scene_output_root(band) / stamp
 
+    def scene_ghsl_depth_path(self, band: str, stamp: str) -> Path:
+        """Path to the final GHSL + Depth raster for a specific band and scene."""
+        return self.scene_output_dir(band, stamp) / "ghsl_depth.tif"
+
     def scene_fill_path(self, band: str, stamp: str) -> Path:
         """Raster of pixels FLEXTH flooded beyond the raw GFM extent (overlay)."""
         return self.scene_output_dir(band, stamp) / GFM_FILL_NAME
-
-    def gfm_output_bands(self) -> list[str]:
-        """Band keys that have at least one scene output folder on disk."""
-        if not self.output_dir.exists():
-            return []
-        return sorted(
-            p.name
-            for p in self.output_dir.iterdir()
-            if p.is_dir()
-            and any(s.is_dir() and SCENE_DIR_RE.match(s.name) for s in p.iterdir())
-        )
 
 
 def vector_path(raster: Path) -> Path:
@@ -398,6 +422,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         gfm=gfm,
         osm=_section_to_dataclass(OsmConfig, raw, "osm"),
         population=_section_to_dataclass(PopulationConfig, raw, "population"),
+        ghsl=_section_to_dataclass(GhslConfig, raw, "ghsl"),
         flexth=raw.get("flexth") or {},
         source_path=path.resolve(),
     )
@@ -412,6 +437,7 @@ def to_dict(cfg: PipelineConfig) -> dict:
         "gfm": dataclasses.asdict(cfg.gfm),
         "osm": dataclasses.asdict(cfg.osm),
         "population": dataclasses.asdict(cfg.population),
+        "ghsl": dataclasses.asdict(cfg.ghsl),
         "flexth": cfg.flexth,
     }
 
@@ -451,9 +477,13 @@ def validate(cfg: PipelineConfig) -> list[str]:
         errors.append(
             f"dem.delivery must be one of {DEM_DELIVERY_MODES}, got {cfg.dem.delivery!r}"
         )
-    if (cfg.dem.enabled or cfg.population.enabled) and not cfg.project.gee_project:
+    if (
+        (cfg.dem.enabled or cfg.population.enabled or cfg.ghsl.enabled)
+        and not cfg.project.gee_project
+    ):
         errors.append(
-            "project.gee_project must be set when the dem or population step is enabled"
+            "project.gee_project must be set when the dem, population, or ghsl "
+            "step is enabled"
         )
     if cfg.population.year != 2020:
         errors.append(

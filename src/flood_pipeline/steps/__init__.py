@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+
 # Steps report progress through a plain line logger so the CLI can print and
 # the dashboard can stream the same output.
 LogFn = Callable[[str], None]
