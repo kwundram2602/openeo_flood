@@ -28,7 +28,7 @@ gfm:
   aggregation: max
   min_area_ha: 0.0
   compare_algorithms: false
-  likelihood_threshold: 20
+  likelihood_threshold: 18
 flexth:
   enabled: true
   resample:

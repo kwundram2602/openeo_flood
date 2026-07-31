@@ -4,6 +4,9 @@ resample -> prepare-dtm -> run. This
 module runs it as a subprocess so its output can be streamed line by line.
 """
 
+# basically just configures and runs flexth
+# warp _warp_to_grid : warp a GFM raster onto the FLEXTH grid
+# opens a subprocess _run_flexth
 from __future__ import annotations
 
 import copy
@@ -193,10 +196,6 @@ def _write_fill_raster(
     cfg: PipelineConfig, band: str, stamp: str, wd_path: Path, log: LogFn
 ) -> Path | None:
     """Write a mask of pixels FLEXTH flooded beyond the raw GFM extent.
-
-    ``added = wet & (raw GFM extent != flood)`` on the shared FLEXTH grid, where
-    ``wet`` excludes nodata (0) and the permanent-water sentinel (999). Returns
-    ``None`` (no-op) when the WD raster or the resampled flood.tif is absent.
     """
     flood_path = cfg.scene_work_dir(band, stamp) / "flood.tif"
     if not wd_path.exists() or not flood_path.exists():

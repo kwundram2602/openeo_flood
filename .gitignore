@@ -14,7 +14,7 @@ t_kjell
 .claude
 docs
 puppeteer-config.json
-
+**.vscode
 # Per-project data (DEM/GFM downloads, FLEXTH intermediates and outputs)
 # but keep each project's config and AOI vectors under version control.
 projects/**
