@@ -158,3 +158,111 @@ def test_reference_water_renders_dark_blue(reference_water_raster: Path) -> None
     opaque = overlay.rgba[..., 3] > 0
     assert opaque.sum() == 9, "only the nine water pixels should be painted"
     assert np.array_equal(overlay.rgba[..., :3][opaque][0], np.array([8, 48, 107]))
+
+
+# --- sparse GHSL layers -------------------------------------------------------
+#
+# ghsl_depth.tif marks only the building pixels a flood actually reached: on a
+# real scene that was 8,135 of 18.2M pixels (0.045%). Downsampling by striding
+# threw five of every six of those away and what survived was sub-pixel on
+# screen, so the map looked empty while its legend claimed 15 classes.
+
+
+def _sparse_class_raster(tmp_path: Path, size: int = 60, spacing: int = 7) -> Path:
+    """A GHSL-class raster: isolated single pixels on a grid, 0 elsewhere.
+
+    ``spacing`` is coprime with the stride the overlay picks, so the pixels do
+    not conveniently land on the kept rows/columns.
+    """
+    values = np.zeros((size, size), dtype="float32")
+    classes = [11, 13, 24]
+    for i, (y, x) in enumerate(
+        (y, x) for y in range(3, size, spacing) for x in range(2, size, spacing)
+    ):
+        values[y, x] = classes[i % len(classes)]
+    path = tmp_path / "ghsl_depth.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", height=size, width=size, count=1,
+        dtype="float32", crs="EPSG:4326", nodata=0,
+        transform=from_origin(0.0, float(size) / 100, 0.01, 0.01),
+    ) as dst:
+        dst.write(values, 1)
+    return path
+
+
+def test_downsampling_keeps_isolated_pixels(tmp_path: Path) -> None:
+    """Coarsening must not drop lone valid pixels the way striding did."""
+    raster = _sparse_class_raster(tmp_path)
+    with rasterio.open(raster) as src:
+        expected = int((src.read(1) > 0).sum())
+
+    # max_dim forces a 4x4 reduction; striding would keep ~1/16 of the pixels.
+    overlay = ui.raster_overlay(
+        raster, cmap="GHSL", mask_values=(0.0,), max_dim=15
+    )
+
+    assert (overlay.rgba[..., 3] > 0).sum() == expected
+
+
+def test_min_feature_px_grows_lone_pixels(tmp_path: Path) -> None:
+    """A single pixel becomes a block big enough to survive map scaling."""
+    values = np.zeros((21, 21), dtype="float32")
+    values[10, 10] = 13.0
+    path = tmp_path / "ghsl_depth.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", height=21, width=21, count=1, dtype="float32",
+        crs="EPSG:4326", nodata=0, transform=from_origin(0.0, 0.21, 0.01, 0.01),
+    ) as dst:
+        dst.write(values, 1)
+
+    plain = ui.raster_overlay(path, cmap="GHSL", mask_values=(0.0,))
+    grown = ui.raster_overlay(path, cmap="GHSL", mask_values=(0.0,), min_feature_px=2)
+
+    assert (plain.rgba[..., 3] > 0).sum() == 1
+    # Two rounds of 8-neighbour growth turn one pixel into a 5x5 block.
+    assert (grown.rgba[..., 3] > 0).sum() == 25
+    # The class code is carried outward, so the block is one uniform colour.
+    opaque = grown.rgba[..., 3] > 0
+    assert len(np.unique(grown.rgba[..., :3][opaque], axis=0)) == 1
+
+
+def test_min_feature_px_does_not_skew_the_statistics(tmp_path: Path) -> None:
+    """Growing pixels is a rendering trick; the reported stats must ignore it."""
+    raster = _sparse_class_raster(tmp_path)
+    plain = ui.raster_overlay(raster, cmap="GHSL", mask_values=(0.0,))
+    grown = ui.raster_overlay(
+        raster, cmap="GHSL", mask_values=(0.0,), min_feature_px=2
+    )
+
+    assert grown.valid_fraction == plain.valid_fraction
+    assert (grown.valid_min, grown.valid_mean, grown.valid_max) == (
+        plain.valid_min, plain.valid_mean, plain.valid_max
+    )
+
+
+def test_present_values_report_only_drawn_classes(tmp_path: Path) -> None:
+    """The overlay reports which classes it painted, so the legend can match."""
+    raster = _sparse_class_raster(tmp_path)
+    overlay = ui.raster_overlay(raster, cmap="GHSL", mask_values=(0.0,))
+
+    assert set(overlay.present_values) == {11, 13, 24}
+
+
+def test_ghsl_legend_lists_only_present_classes(tmp_path: Path) -> None:
+    """A legend showing all 15 classes hides that the map drew almost nothing."""
+    raster = _sparse_class_raster(tmp_path)
+    overlay = ui.raster_overlay(raster, cmap="GHSL", mask_values=(0.0,))
+
+    filtered = ui.colorbar_figure(
+        overlay.vmin, overlay.vmax, "GHSL", "class", overlay.present_values
+    )
+    full = ui.colorbar_figure(overlay.vmin, overlay.vmax, "GHSL", "class")
+
+    assert len(filtered.legends[0].get_texts()) == 3
+    assert len(full.legends[0].get_texts()) == len(ui.GHSL_COLOR_DICT)
+
+
+def test_continuous_overlays_report_no_present_values(depth_raster: Path) -> None:
+    """present_values is a discrete-class concept; continuous layers leave it empty."""
+    overlay = ui.raster_overlay(depth_raster, cmap="Blues", mask_values=(0.0, 999.0))
+    assert overlay.present_values == ()

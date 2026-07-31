@@ -22,3 +22,4 @@ projects/**
 !projects/*/config.yaml
 !projects/*/*.geojson
 !projects/*/*.gpkg
+cache/

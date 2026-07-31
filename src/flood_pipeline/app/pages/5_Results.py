@@ -67,17 +67,17 @@ def _load_summary(path: Path) -> dict[str, float] | None:
 
 def _add_line_layer(
     parent: folium.Map | folium.FeatureGroup,
-    gdf: gpd.GeoDataFrame | None,
+    geojson: dict | None,
     *,
     name: str,
     color: str,
     weight: int,
     opacity: float,
 ) -> None:
-    if gdf is None or gdf.empty:
+    if geojson is None:
         return
     folium.GeoJson(
-        gdf.to_crs(epsg=4326).__geo_interface__,
+        geojson,
         name=name,
         style_function=lambda _feature, color=color, weight=weight, opacity=opacity: {
             "color": color,
@@ -184,6 +184,11 @@ kind = st.radio(
     key=f"layer_radio_{band}"
 )
 
+# GHSL+Depth marks only the building pixels a flood actually reached -- a few
+# thousand 10m pixels scattered over the whole AOI, each well under one screen
+# pixel once the overlay PNG is scaled into the map. Grow them so they show up.
+min_feature_px = 0
+
 if kind == "Water depth":
     wanted = "WD"
     selected = scenes[stamp].get(wanted)
@@ -198,6 +203,7 @@ elif kind == "Water level":
     band_index = 0
 else:  # GHSL + Depth
     selected = cfg.scene_ghsl_depth_path(band, stamp)
+    min_feature_px = 2
     ghsl_view = st.radio(
         "GHSL view",
         list(ui.GHSL_DEPTH_BANDS),
@@ -313,7 +319,12 @@ else:
 
 try:
     overlay = ui.raster_overlay(
-        selected, cmap=cmap, mask_values=mask_values, scale=scale, band_index=band_index
+        selected,
+        cmap=cmap,
+        mask_values=mask_values,
+        scale=scale,
+        band_index=band_index,
+        min_feature_px=min_feature_px,
     )
 except ValueError:
     st.info(
@@ -352,25 +363,36 @@ elif wd_path is None or not wd_path.exists():
         "exposure needs it regardless of which Layer view is selected above."
     )
 
-roads_layer = _load_gdf(osm_roads_path, "roads") if show_roads else None
-railways_layer = _load_gdf(osm_railways_path, "railways") if show_railways else None
-flooded_roads_layer = (
-    _load_gdf(osm_flooded_roads_path, "roads_flooded") if show_flooded_infra else None
+roads_geojson = ui.line_overlay_geojson(osm_roads_path, "roads") if show_roads else None
+railways_geojson = (
+    ui.line_overlay_geojson(osm_railways_path, "railways") if show_railways else None
 )
-flooded_railways_layer = (
-    _load_gdf(osm_flooded_railways_path, "railways_flooded") if show_flooded_infra else None
+flooded_roads_geojson = (
+    ui.line_overlay_geojson(osm_flooded_roads_path, "roads_flooded")
+    if show_flooded_infra
+    else None
+)
+flooded_railways_geojson = (
+    ui.line_overlay_geojson(osm_flooded_railways_path, "railways_flooded")
+    if show_flooded_infra
+    else None
 )
 
 osm_summary = _load_summary(osm_summary_path)
-if osm_summary is None and any(
-    layer is not None for layer in [roads_layer, railways_layer, flooded_roads_layer, flooded_railways_layer]
-):
-    osm_summary = _summary_from_layers(
-        roads_layer,
-        railways_layer,
-        flooded_roads_layer,
-        flooded_railways_layer,
-    )
+if osm_summary is None and (show_roads or show_railways or show_flooded_infra):
+    # Fallback for scenes written before the osm step saved a summary. Unlike
+    # the map layers above this reads the full attribute tables, because the
+    # lengths come from their per-segment ``length_m``.
+    metric_layers = [
+        _load_gdf(osm_roads_path, "roads") if show_roads else None,
+        _load_gdf(osm_railways_path, "railways") if show_railways else None,
+        _load_gdf(osm_flooded_roads_path, "roads_flooded") if show_flooded_infra else None,
+        _load_gdf(osm_flooded_railways_path, "railways_flooded")
+        if show_flooded_infra
+        else None,
+    ]
+    if any(layer is not None for layer in metric_layers):
+        osm_summary = _summary_from_layers(*metric_layers)
 
 if osm_summary is not None:
     st.subheader("Infrastructure impact")
@@ -596,7 +618,7 @@ if show_population and population_path.exists():
 if show_roads:
     _add_line_layer(
         overlays,
-        roads_layer,
+        roads_geojson,
         name="roads",
         color="#666666",
         weight=2,
@@ -606,7 +628,7 @@ if show_roads:
 if show_railways:
     _add_line_layer(
         overlays,
-        railways_layer,
+        railways_geojson,
         name="railways",
         color="#1b9e77",
         weight=2,
@@ -616,7 +638,7 @@ if show_railways:
 if show_flooded_infra:
     _add_line_layer(
         overlays,
-        flooded_roads_layer,
+        flooded_roads_geojson,
         name="flooded roads",
         color="#e31a1c",
         weight=4,
@@ -624,7 +646,7 @@ if show_flooded_infra:
     )
     _add_line_layer(
         overlays,
-        flooded_railways_layer,
+        flooded_railways_geojson,
         name="flooded railways",
         color="#ff7f00",
         weight=4,
@@ -702,10 +724,25 @@ else:
         del st.session_state["results_probe"]
         st.rerun()
 
-st.pyplot(
-    ui.colorbar_figure(overlay.vmin, overlay.vmax, cmap, label),
-    width="content",
-)
+if cmap == "GHSL" and not overlay.present_values:
+    st.info(
+        "No GHSL settlement classes overlap the flood extent in this scene — "
+        "the map has nothing to draw for this layer."
+    )
+else:
+    # Pass the tuple as-is: an empty one means "nothing drawn", which is not
+    # the same as None ("do not filter") and must not fall back to the full
+    # 15-class list.
+    st.pyplot(
+        ui.colorbar_figure(
+            overlay.vmin,
+            overlay.vmax,
+            cmap,
+            label,
+            overlay.present_values if cmap == "GHSL" else None,
+        ),
+        width="content",
+    )
 st.caption(
     "Color range is calibrated to damage severity classes or 2nd-98th percentile of valid pixels; "
     "the map is a downsampled preview — use QGIS on the GeoTIFF for full resolution."

@@ -25,6 +25,8 @@ class ConfigError(Exception):
 
 
 DEM_DELIVERY_MODES = ("local", "drive")
+# UTM CRS codes: EPSG:326xx northern hemisphere, EPSG:327xx southern, xx = zone.
+UTM_EPSG_PATTERN = re.compile(r"^EPSG:(?:326|327)([0-9]{2})$", re.IGNORECASE)
 GFM_AGGREGATIONS = ("max", "sum", "both")
 GFM_SCENE_PREFIX = "gfm_flood"
 GFM_MAX_NAME = f"{GFM_SCENE_PREFIX}_max.tif"
@@ -455,6 +457,75 @@ def save_config(cfg: PipelineConfig, path: Path | None = None) -> None:
     )
 
 
+def suggest_utm_epsg(aoi_path: Path | str) -> str | None:
+    """UTM zone EPSG code for the AOI's centroid, or None if the AOI is missing.
+
+    A UTM CRS is only accurate near its own zone (~6 degrees of longitude);
+    using a zone from a different part of the world -- e.g. a template copied
+    from another project -- is not caught by every consumer. GDAL silently
+    produces a badly warped grid, while Earth Engine refuses the request with
+    an opaque ``400 Can't transform (x,y)``.
+    """
+    import geopandas as gpd
+
+    aoi_path = Path(aoi_path)
+    if not aoi_path.exists():
+        return None
+    try:
+        gdf = gpd.read_file(aoi_path).to_crs(epsg=4326)
+        union = gdf.union_all() if hasattr(gdf, "union_all") else gdf.unary_union
+        lon, lat = union.centroid.x, union.centroid.y
+    except Exception:
+        # An unreadable or geometry-less AOI is not this helper's problem to
+        # report: it only ever offers a suggestion, and validate() already
+        # flags a missing AOI separately. "No suggestion" is the honest answer.
+        return None
+    zone = int((lon + 180) // 6) + 1
+    epsg = 32600 + zone if lat >= 0 else 32700 + zone
+    return f"EPSG:{epsg}"
+
+
+def _flexth_resample_crs(cfg: PipelineConfig) -> str | None:
+    """``flexth.resample.crs``, or None when that stage is off/absent."""
+    resample = cfg.flexth.get("resample")
+    if not isinstance(resample, dict) or not resample.get("enabled", False):
+        return None
+    crs = resample.get("crs")
+    return crs if isinstance(crs, str) else None
+
+
+def _utm_zone_errors(cfg: PipelineConfig) -> list[str]:
+    """Flag UTM CRS settings whose zone does not cover the AOI.
+
+    Only UTM codes are checked -- a global CRS (EPSG:4326, EPSG:3857, ...) is
+    valid anywhere, so anything not matching ``UTM_EPSG_PATTERN`` is left
+    alone. The AOI is only read when there is something to check, so configs
+    that stay on global CRS pay no geopandas import.
+    """
+    candidates = [
+        ("ghsl.crs", cfg.ghsl.crs if cfg.ghsl.enabled else None),
+        ("population.crs", cfg.population.crs if cfg.population.enabled else None),
+        ("dem.crs", cfg.dem.crs if cfg.dem.enabled else None),
+        ("flexth.resample.crs", _flexth_resample_crs(cfg)),
+    ]
+    utm_candidates = [
+        (key, value)
+        for key, value in candidates
+        if value and UTM_EPSG_PATTERN.match(value)
+    ]
+    if not utm_candidates:
+        return []
+    expected = suggest_utm_epsg(cfg.aoi_abs_path)
+    if expected is None:
+        return []
+    return [
+        f"{key} is {value}, a UTM zone that does not cover this AOI; "
+        f"use {expected} or a global CRS such as EPSG:4326"
+        for key, value in utm_candidates
+        if value.upper() != expected
+    ]
+
+
 def _temporal_extent_errors(extent: list[str]) -> list[str]:
     if len(extent) != 2:
         return [f"gfm.temporal_extent must be [start, end], got {extent!r}"]
@@ -491,6 +562,9 @@ def validate(cfg: PipelineConfig) -> list[str]:
         )
     if cfg.population.scale <= 0:
         errors.append("population.scale must be greater than zero")
+    if cfg.ghsl.scale <= 0:
+        errors.append("ghsl.scale must be greater than zero")
+    errors.extend(_utm_zone_errors(cfg))
     if cfg.gfm.aggregation not in GFM_AGGREGATIONS:
         errors.append(
             f"gfm.aggregation must be one of {GFM_AGGREGATIONS}, got {cfg.gfm.aggregation!r}"

@@ -1,7 +1,6 @@
 """GFM flood-extent step: ensemble flood extent from the EODC STAC catalog.
 
-One raster is written per acquisition timestamp (cube time-slice);
-FLEXTH then consumes each per-scene mask.
+
 The whole-time maximum is always written too (overall flood extent)
 """
 

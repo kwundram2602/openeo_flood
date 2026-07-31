@@ -28,12 +28,12 @@ gfm:
   aggregation: max
   min_area_ha: 0.0
   compare_algorithms: false
-  likelihood_threshold: 18
+  likelihood_threshold: 17
 flexth:
   enabled: true
   resample:
     enabled: true
-    crs: EPSG:32633
+    crs: EPSG:32630
     resolution:
     - 30
     - 30
@@ -65,6 +65,20 @@ flexth:
       kern_closing_size: 3
       closing_iterations: 2
   fill_excluded: true
-population: {}
 osm:
   enabled: true
+ghsl:
+  enabled: true
+  asset: JRC/GHSL/P2023A/GHS_BUILT_C/2018
+  band: built_characteristics
+  scale: 10
+  crs: EPSG:4326
+population:
+  enabled: true
+  collection: WorldPop/GP/100m/pop_age_sex_cons_unadj
+  year: 2020
+  band: population
+  scale: 100
+  crs: EPSG:4326
+  out_name: worldpop_2020.tif
+  overwrite: true

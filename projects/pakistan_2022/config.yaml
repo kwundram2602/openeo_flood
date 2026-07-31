@@ -1,6 +1,6 @@
 project:
   name: pakistan_demo
-  gee_project: wuewill
+  gee_project: ee-kwun
   data_dir: flood_data
   work_dir: preprocessed
   output_dir: wl_wd_out
@@ -28,7 +28,7 @@ gfm:
   aggregation: max
   min_area_ha: 1.0
   compare_algorithms: false
-  likelihood_threshold: 20
+  likelihood_threshold: 17
 flexth:
   enabled: true
   resample:

@@ -18,6 +18,7 @@ import matplotlib
 import matplotlib.colors
 import matplotlib.patches
 import numpy as np
+import shapely.geometry
 import streamlit as st
 import yaml
 
@@ -29,6 +30,7 @@ DEFAULT_CONFIG_NAME = "config.yaml"
 PROJECTS_DIR_NAME = "projects"
 OVERLAY_OPACITY = 0.85
 CMAP_FLOOR = 0.25  # where the lowest displayed value lands in the colormap
+LINE_OVERLAY_SIMPLIFY_DEG = 0.0001  # ~10 m: finer than the map can show anyway
 
 
 @functools.cache
@@ -247,6 +249,46 @@ def add_aoi_layer(parent: folium.Map | folium.FeatureGroup, aoi_path: Path) -> N
     ).add_to(parent)
 
 
+def line_overlay_geojson(path: Path, layer: str) -> dict | None:
+    """Map-ready GeoJSON for an OSM line layer; None when there is nothing to draw.
+
+    OSMnx returns the AOI's road network as tens of thousands of separate
+    segments carrying all their tags. Handed to folium unchanged that is ~60 MB
+    of JavaScript per rerun, which takes the map — and with it the app — down.
+    The map needs none of the per-segment attributes (the km metrics come from
+    the osm step's ``summary.json``), so the segments are dissolved into one
+    geometry, simplified below what the map can resolve, and stripped of their
+    properties.
+    """
+    if not path.exists():
+        return None
+    return _build_line_overlay(str(path), layer, path.stat().st_mtime)
+
+
+@st.cache_data(show_spinner="preparing infrastructure overlay ...")
+def _build_line_overlay(path_str: str, layer: str, mtime: float) -> dict | None:
+    """Dissolve, simplify and strip one line layer. ``mtime`` is a cache key."""
+    lines = gpd.read_file(path_str, layer=layer)
+    if lines.empty:
+        return None
+    simplified = lines.to_crs(epsg=4326).geometry.simplify(
+        LINE_OVERLAY_SIMPLIFY_DEG, preserve_topology=False
+    )
+    merged = simplified.union_all()
+    if merged.is_empty:
+        return None
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {},
+                "geometry": shapely.geometry.mapping(merged),
+            }
+        ],
+    }
+
+
 def flood_areas(vector: Path) -> gpd.GeoDataFrame | None:
     """Connected flood areas of a GFM raster, largest first; None if not written.
 
@@ -314,6 +356,66 @@ def format_share(fraction: float) -> str:
     return f"{percent:.1f}%" if percent >= 0.1 else f"{percent:.2g}%"
 
 
+def _first_valid(block: np.ndarray, axis, **kwargs) -> np.ndarray:
+    """Reduce ``block``'s ``axis`` dimensions to their first finite value.
+
+    The reduction xarray's ``coarsen`` gets for downsampling. Plain striding
+    (``isel(y=slice(None, None, step))``) is what this replaces: striding
+    *discards* whole rows and columns, which is harmless for a dense raster
+    but destroys a sparse one -- ``ghsl_depth.tif`` marks only the building
+    pixels that a flood actually reached (well under 0.1% of the grid), and a
+    3x2 stride drops five of every six of them.
+
+    First-finite rather than max or mean because Band 1 holds discrete GHSL
+    class codes: ``nanmax`` would systematically let the higher code win
+    inside a block (24 over 11) and skew what the map shows, while a mean of
+    class codes is meaningless. For dense continuous layers this picks one
+    representative sample per block, exactly as striding did.
+    """
+    axis = tuple(axis) if isinstance(axis, (tuple, list)) else (axis,)
+    moved = np.moveaxis(block, axis, range(-len(axis), 0))
+    flat = moved.reshape(*moved.shape[: moved.ndim - len(axis)], -1)
+    finite = np.isfinite(flat)
+    picked = np.take_along_axis(flat, np.argmax(finite, axis=-1)[..., None], axis=-1)
+    return np.where(finite.any(axis=-1), picked[..., 0], np.nan)
+
+
+def _dilate_nearest(values: np.ndarray, iterations: int) -> np.ndarray:
+    """Grow finite regions of ``values`` outward by ``iterations`` pixels.
+
+    Carries each region's own value into the NaN pixels around it, so it works
+    for discrete class codes and continuous values alike. Only NaN pixels are
+    written, so original values always win over borrowed ones and a region
+    grows without eating its neighbours.
+
+    Needed because an ImageOverlay is a fixed-resolution PNG: a lone valid
+    pixel in a 1500px-wide image spanning a 40km AOI is well under one screen
+    pixel and vanishes in the browser's downscaling. Nothing about the data is
+    wrong -- it is simply too fine to survive being drawn.
+
+    Slice assignment rather than ``np.roll`` (which wraps around the edges),
+    and numpy rather than ``scipy.ndimage`` (present in the environment but
+    not declared in pyproject.toml).
+    """
+    out = values.copy()
+    shifts = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    for _ in range(iterations):
+        holes = ~np.isfinite(out)
+        if not holes.any():
+            break
+        source = out.copy()
+        for dy, dx in shifts:
+            dst_y = slice(max(dy, 0), out.shape[0] + min(dy, 0))
+            src_y = slice(max(-dy, 0), out.shape[0] + min(-dy, 0))
+            dst_x = slice(max(dx, 0), out.shape[1] + min(dx, 0))
+            src_x = slice(max(-dx, 0), out.shape[1] + min(-dx, 0))
+            candidate = source[src_y, src_x]
+            target = out[dst_y, dst_x]
+            gap = holes[dst_y, dst_x] & np.isfinite(candidate)
+            out[dst_y, dst_x] = np.where(gap, candidate, target)
+    return out
+
+
 @dataclass
 class RasterOverlay:
     """A display-ready raster: RGBA image, folium bounds and value stats."""
@@ -326,6 +428,10 @@ class RasterOverlay:
     valid_mean: float
     valid_max: float
     valid_fraction: float
+    # GHSL classes actually drawn, for the "GHSL" colormap; empty otherwise.
+    # Lets the legend show what is on the map instead of the full static
+    # 15-class list, which looked identical whether or not anything rendered.
+    present_values: tuple[int, ...] = ()
 
 
 def raster_overlay(
@@ -339,8 +445,15 @@ def raster_overlay(
     band_index: int = 0,
     vmin: float | None = None,
     vmax: float | None = None,
+    min_feature_px: int = 0,
 ) -> RasterOverlay:
-    """Load a raster as a colormapped RGBA overlay in EPSG:4326."""
+    """Load a raster as a colormapped RGBA overlay in EPSG:4326.
+
+    ``min_feature_px`` grows every valid region by that many pixels before
+    colouring, so sparse layers stay visible once the PNG is scaled into the
+    map (see ``_dilate_nearest``). Leave at 0 for dense layers, whose regions
+    are large enough already.
+    """
     path = Path(path)
     fields = _build_overlay(
         path_str=str(path),
@@ -353,6 +466,7 @@ def raster_overlay(
         band_index=band_index,
         vmin_override=vmin,
         vmax_override=vmax,
+        min_feature_px=min_feature_px,
     )
     return RasterOverlay(**fields)
 
@@ -369,6 +483,7 @@ def _build_overlay(
     band_index: int = 0,
     vmin_override: float | None = None,
     vmax_override: float | None = None,
+    min_feature_px: int = 0,
 ) -> dict:
     """Compute the overlay fields as a plain dict."""
     import rioxarray
@@ -386,7 +501,8 @@ def _build_overlay(
     step_y = max(1, data.sizes["y"] // max_dim)
     step_x = max(1, data.sizes["x"] // max_dim)
     if step_y > 1 or step_x > 1:
-        data = data.isel(y=slice(None, None, step_y), x=slice(None, None, step_x))
+        # boundary="trim" drops at most one partial block off the far edge.
+        data = data.coarsen(y=step_y, x=step_x, boundary="trim").reduce(_first_valid)
     data = data.rio.reproject("EPSG:4326")
 
     values = data.values.astype("float32")
@@ -409,17 +525,29 @@ def _build_overlay(
     if vmax <= vmin:
         vmax = vmin + 1e-6
 
+    # After the stats, so the reported min/mean/max and valid_fraction keep
+    # describing the data rather than the enlarged rendering of it.
+    if min_feature_px > 0:
+        values = _dilate_nearest(values, min_feature_px)
+        finite_mask = np.isfinite(values)
+
+    present_values: tuple[int, ...] = ()
     if solid_color is not None:
         rgba = np.tile(matplotlib.colors.to_rgba(solid_color), values.shape + (1,))
     elif cmap == "GHSL":
         rgba = np.zeros(values.shape + (4,), dtype=np.float32)
         int_values = np.nan_to_num(values, nan=0).astype(int)
         known_class_mask = np.zeros(values.shape, dtype=bool)
+        present: list[int] = []
         for class_id, hex_code in GHSL_COLOR_DICT.items():
             class_mask = (int_values == class_id) & finite_mask
+            if not class_mask.any():
+                continue
             rgba[class_mask] = matplotlib.colors.to_rgba(hex_code)
             known_class_mask |= class_mask
+            present.append(class_id)
         finite_mask = finite_mask & known_class_mask
+        present_values = tuple(present)
     elif cmap == "Damage":
         # Discrete damage severity bins
         cmap_damage = matplotlib.colors.ListedColormap(DAMAGE_COLORS)
@@ -442,6 +570,7 @@ def _build_overlay(
         "valid_mean": float(finite.mean()),
         "valid_max": float(finite.max()),
         "valid_fraction": float(finite.size / values.size),
+        "present_values": present_values,
     }
 
 
@@ -576,18 +705,37 @@ def _build_ghsl_exposure(
     }
 
 
-def colorbar_figure(vmin: float, vmax: float, cmap: str, label: str):
-    """A slim horizontal colorbar/legend to serve as the map legend."""
+def colorbar_figure(
+    vmin: float,
+    vmax: float,
+    cmap: str,
+    label: str,
+    present_values: tuple[int, ...] | None = None,
+):
+    """A slim horizontal colorbar/legend to serve as the map legend.
+
+    ``present_values`` restricts the GHSL class legend to the classes actually
+    drawn (``RasterOverlay.present_values``). Without it the legend lists all
+    15 classes regardless of the scene, which reads as "the layer rendered
+    fine" even when nothing is on the map. None keeps the full list.
+    """
     import matplotlib.pyplot as plt
 
     if cmap == "GHSL":
+        classes = GHSL_COLOR_DICT
+        if present_values is not None:
+            classes = {
+                cid: hex_code
+                for cid, hex_code in GHSL_COLOR_DICT.items()
+                if cid in present_values
+            }
         fig = plt.figure(figsize=(7.5, 1.6))
         ax = fig.add_axes((0.05, 0.55, 0.9, 0.3))
         patches = [
             matplotlib.patches.Patch(
                 color=hex_code, label=GHSL_CLASS_LABELS.get(cid, f"Class {cid}")
             )
-            for cid, hex_code in GHSL_COLOR_DICT.items()
+            for cid, hex_code in classes.items()
         ]
         fig.legend(handles=patches, loc="center", ncol=3, fontsize="small", frameon=False)
         ax.axis("off")

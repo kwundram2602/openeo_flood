@@ -46,13 +46,7 @@ def _pixel_area_m2(src: rasterio.DatasetReader) -> np.ndarray | float:
 
     Returns a (height, 1) array broadcastable against a (height, width) array
     when ``src``'s CRS is geographic (pixel width in meters shrinks toward
-    the poles as longitude degrees converge with latitude), or a plain float
-    when it's already a projected/metric CRS (cfg.ghsl.crs defaults to
-    EPSG:4326, but is user-configurable).
-
-    The geographic case uses a local equirectangular approximation -- accurate
-    at the scale of a single GHSL pixel (10s of meters), not for continental
-    distances, which is exactly the scale this needs it at.
+    the poles as longitude degrees converge with latitude).
     """
     transform = src.transform
     px_width = abs(transform.a)

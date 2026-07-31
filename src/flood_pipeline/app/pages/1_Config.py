@@ -9,6 +9,7 @@ from flood_pipeline.config import (
     DEM_DELIVERY_MODES,
     GFM_AGGREGATIONS,
     GFM_SELECTABLE_BANDS,
+    suggest_utm_epsg,
 )
 
 st.set_page_config(page_title="Config", page_icon="⚙️", layout="wide")
@@ -21,26 +22,6 @@ st.caption(f"Editing `{cfg_path}` — saving a section rewrites the file (commen
 def _saved(section: str) -> None:
     ui.save_cfg()
     st.toast(f"Saved {section} to {cfg_path.name}", icon="💾")
-
-
-def _suggest_utm_epsg(aoi_path) -> str | None:
-    """UTM zone EPSG code for the AOI's centroid, or None if the AOI is missing.
-
-    A UTM CRS is only accurate near its own zone (~6° of longitude); using a
-    zone from a different part of the world -- e.g. a template copied from
-    another project -- silently produces a badly warped grid instead of an
-    error, so this is worth checking whenever the AOI changes.
-    """
-    import geopandas as gpd
-
-    if not aoi_path.exists():
-        return None
-    gdf = gpd.read_file(aoi_path).to_crs(epsg=4326)
-    union = gdf.union_all() if hasattr(gdf, "union_all") else gdf.unary_union
-    lon, lat = union.centroid.x, union.centroid.y
-    zone = int((lon + 180) // 6) + 1
-    epsg = 32600 + zone if lat >= 0 else 32700 + zone
-    return f"EPSG:{epsg}"
 
 
 # --- project + AOI -----------------------------------------------------------
@@ -258,7 +239,7 @@ if suggest_col.button(
     help="Reads the AOI's centroid and picks the matching UTM zone. "
     "A CRS from the wrong zone silently distorts the FLEXTH grid instead of erroring.",
 ):
-    suggestion = _suggest_utm_epsg(aoi_full_path)
+    suggestion = suggest_utm_epsg(aoi_full_path)
     if suggestion is None:
         warn_col.warning(f"AOI file not found at `{aoi_full_path}` — save an AOI first.")
     else:

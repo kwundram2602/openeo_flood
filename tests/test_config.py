@@ -1,5 +1,6 @@
 """Tests for flood_pipeline.config: loading, round-trip, path resolution, validation."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -242,6 +243,78 @@ def test_validate_negative_min_area(config_file: Path) -> None:
     assert any("gfm.min_area_ha" in e for e in validate(cfg))
     cfg.gfm.min_area_ha = 0.0  # 0 is legal: it means "no filter"
     assert not any("gfm.min_area_ha" in e for e in validate(cfg))
+
+
+@pytest.fixture
+def config_with_real_aoi(tmp_path: Path) -> Path:
+    """A config whose AOI is a real polygon near Valencia (UTM zone 30N)."""
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(MINIMAL_CONFIG), encoding="utf-8")
+    (tmp_path / "aoi.geojson").write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [-0.59, 39.11], [-0.23, 39.11],
+                                    [-0.23, 39.52], [-0.59, 39.52], [-0.59, 39.11],
+                                ]
+                            ],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_validate_flags_utm_zone_from_another_project(
+    config_with_real_aoi: Path,
+) -> None:
+    """A UTM zone copied from a different AOI must not slip through.
+
+    This is how the GHSL step broke: a Valencia config inherited Pakistan's
+    EPSG:32642 from the project it was copied from. Earth Engine answered with
+    an opaque ``400 Can't transform (-533100.0,-742330.5)``, and GDAL happily
+    wrote a raster whose bounds sat millions of metres outside the zone.
+    """
+    cfg = load_config(config_with_real_aoi)
+    cfg.ghsl.crs = "EPSG:32642"  # UTM 42N -- Pakistan
+    errors = validate(cfg)
+
+    assert any("ghsl.crs" in e and "EPSG:32630" in e for e in errors)
+    # The fixture's flexth.resample.crs (EPSG:32633, Italy) is wrong too.
+    assert any("flexth.resample.crs" in e for e in errors)
+
+
+def test_validate_accepts_the_matching_zone_and_global_crs(
+    config_with_real_aoi: Path,
+) -> None:
+    """The AOI's own zone passes, and a global CRS is valid anywhere."""
+    cfg = load_config(config_with_real_aoi)
+    cfg.flexth["resample"]["crs"] = "EPSG:32630"
+
+    for crs in ("EPSG:32630", "EPSG:4326", "EPSG:3857"):
+        cfg.ghsl.crs = crs
+        assert not any("ghsl.crs" in e for e in validate(cfg)), crs
+
+
+def test_validate_skips_crs_check_for_disabled_steps(
+    config_with_real_aoi: Path,
+) -> None:
+    """A disabled step's CRS cannot break anything, so it is not reported."""
+    cfg = load_config(config_with_real_aoi)
+    cfg.ghsl.enabled = False
+    cfg.ghsl.crs = "EPSG:32642"
+    assert not any("ghsl.crs" in e for e in validate(cfg))
 
 
 def test_validate_bad_ghsl_scale(config_file: Path) -> None:

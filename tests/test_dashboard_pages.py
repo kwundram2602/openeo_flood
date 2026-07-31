@@ -339,3 +339,64 @@ def test_create_project_from_template(tmp_path: Path) -> None:
 
     with pytest.raises(FileExistsError):
         ui.create_project("new_region", tmp_path / "runs", template)
+
+
+def _write_road_segments(path: Path, count: int) -> "gpd.GeoDataFrame":
+    """A road layer shaped like OSMnx's: many short segments, many tag columns."""
+    import geopandas as gpd
+    from shapely.geometry import LineString
+
+    step = 0.001
+    segments = [
+        LineString([(10.0 + i * step, 47.0), (10.0 + (i + 1) * step, 47.0)])
+        for i in range(count)
+    ]
+    roads = gpd.GeoDataFrame(
+        {
+            "osmid": list(range(count)),
+            "highway": ["residential"] * count,
+            "name": ["Some long street name"] * count,
+            "length_m": [step * 80_000] * count,
+        },
+        geometry=segments,
+        crs="EPSG:4326",
+    )
+    roads.to_file(path, layer="roads", driver="GPKG")
+    return roads
+
+
+def test_line_overlay_geojson_is_one_stripped_feature(tmp_path: Path) -> None:
+    """The map layer must not carry 78k tagged segments — that crashes the app."""
+    import json
+
+    from flood_pipeline.app import ui
+
+    path = tmp_path / "roads.gpkg"
+    roads = _write_road_segments(path, 500)
+
+    overlay = ui.line_overlay_geojson(path, "roads")
+
+    assert overlay["type"] == "FeatureCollection"
+    assert len(overlay["features"]) == 1
+    assert overlay["features"][0]["properties"] == {}
+    raw_size = len(json.dumps(roads.__geo_interface__))
+    assert len(json.dumps(overlay)) < raw_size / 5
+
+
+def test_line_overlay_geojson_is_none_without_a_file(tmp_path: Path) -> None:
+    from flood_pipeline.app import ui
+
+    assert ui.line_overlay_geojson(tmp_path / "missing.gpkg", "roads") is None
+
+
+def test_line_overlay_geojson_is_none_for_an_empty_layer(tmp_path: Path) -> None:
+    import geopandas as gpd
+
+    from flood_pipeline.app import ui
+
+    path = tmp_path / "empty.gpkg"
+    gpd.GeoDataFrame({"osmid": []}, geometry=[], crs="EPSG:4326").to_file(
+        path, layer="roads", driver="GPKG"
+    )
+
+    assert ui.line_overlay_geojson(path, "roads") is None
